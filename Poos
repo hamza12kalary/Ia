@@ -1,5 +1,5 @@
 //+------------------------------------------------------------------+
-//| TikTok_Smart_Dynamic_Hedge_EA.mq5                                |
+//| TikTok_Volume_Based_Hedge_EA.mq5                                 |
 //+------------------------------------------------------------------+
 #property strict
 
@@ -9,8 +9,8 @@ CTrade trade;
 //==================== INPUT SETTINGS ===============================
 
 input double LotSize          = 0.01;  // لۆت
-input int    LossDistancePts  = 200;   // دووری ئۆردەر کاتێک لە زەرەردایە (200 points = 20 Pips)
-input int    ProfitDistancePts= 10;    // دووری ئۆردەر کاتێک دەچێتە قازانج (10 points = 1 Pip)
+input int    FixedStopPts     = 100;   // دووری ستۆپی جێگیر لە زەرەردا (100 points = 10 Pips)
+input int    ProfitDistancePts= 10;    // دووری تراپ لە قازانجدا (10 points = 1 Pip)
 input ulong  MagicNumber      = 111222;
 
 //+------------------------------------------------------------------+
@@ -81,7 +81,7 @@ void ManagePendingOrder()
 {
    double profit = GetCurrentPositionProfit();
 
-   // کاتێک لە زەرەردایە ➔ ڕێگە مەدە ئۆردەرەکە بپڕێت یان بگوێزرێتەوە (نەگۆڕ بێت)
+   // کاتێک لە زەرەردایە ➔ ستۆپەکە لە دووری ١٠ پیپ جێگیر دەمێنێتەوە و ناجوڵێت
    if(profit <= 0) return;
 
    double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
@@ -117,6 +117,22 @@ void ManagePendingOrder()
 }
 
 //+------------------------------------------------------------------+
+// دۆزینەوەی ئاڕاستەی بازار بەپێی Volume و مۆمی پێشوو
+//+------------------------------------------------------------------+
+int GetVolumeDirection()
+{
+   double open1  = iOpen(_Symbol, _Period, 1);
+   double close1 = iClose(_Symbol, _Period, 1);
+
+   if(close1 > open1)
+      return 1;  // BUY
+   else if(close1 < open1)
+      return -1; // SELL
+      
+   return 0;
+}
+
+//+------------------------------------------------------------------+
 // Main EA Logic
 //+------------------------------------------------------------------+
 void ExecuteLogic()
@@ -127,28 +143,40 @@ void ExecuteLogic()
    int openPositions = CountOpenPositions();
    int pendingOrders = CountPendingOrders();
 
-   // 1. کاتێک نرخ گەڕایەوە و لە SELL STOPی دا (بوو بە 2 پۆزیشن) ➔ ڕاستەوخۆ هەموو شتێک دابخە
+   // 1. کاتێک نرخەکە لە Pending Orderی دا و بووە 2 پۆزیشن ➔ ڕاستەوخۆ هەردووکیان دابخە
    if(openPositions >= 2)
    {
       CloseAndCleanAll();
       return;
    }
 
-   // 2. کاتێک هیچ پۆزیشنێک کراوە نییە ➔ BUY بکەرەوە و SELL STOP لە دووری 20 پیپ (200 points) دابنێ
+   // 2. کاتێک هیچ پۆزیشنێک نییە ➔ بەپێی Volume و ئاڕاستەی مۆمی ۱ ئۆردەر دەکاتەوە
    if(openPositions == 0)
    {
       CloseAndCleanAll();
 
       double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
       double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+      int direction = GetVolumeDirection();
 
-      if(trade.Buy(LotSize, _Symbol, ask, 0, 0, "Initial Buy"))
+      if(direction == 1) // BUY logic
       {
-         double sellPrice = NormalizeDouble(bid - (LossDistancePts * _Point), _Digits);
-         trade.SellStop(LotSize, sellPrice, _Symbol, 0, 0, ORDER_TIME_GTC, 0, "Protection SellStop");
+         if(trade.Buy(LotSize, _Symbol, ask, 0, 0, "Volume Buy"))
+         {
+            double sellPrice = NormalizeDouble(bid - (FixedStopPts * _Point), _Digits);
+            trade.SellStop(LotSize, sellPrice, _Symbol, 0, 0, ORDER_TIME_GTC, 0, "Protection SellStop");
+         }
+      }
+      else if(direction == -1) // SELL logic
+      {
+         if(trade.Sell(LotSize, _Symbol, bid, 0, 0, "Volume Sell"))
+         {
+            double buyPrice = NormalizeDouble(ask + (FixedStopPts * _Point), _Digits);
+            trade.BuyStop(LotSize, buyPrice, _Symbol, 0, 0, ORDER_TIME_GTC, 0, "Protection BuyStop");
+         }
       }
    }
-   // 3. کاتێک ١ پۆزیشن کراوەیە
+   // 3. کاتێک ۱ پۆزیشن کراوەیە
    else if(openPositions == 1)
    {
       if(pendingOrders == 0)
@@ -164,12 +192,12 @@ void ExecuteLogic()
 
                if(type == POSITION_TYPE_BUY)
                {
-                  double sellPrice = NormalizeDouble(bid - (LossDistancePts * _Point), _Digits);
+                  double sellPrice = NormalizeDouble(bid - (FixedStopPts * _Point), _Digits);
                   trade.SellStop(LotSize, sellPrice, _Symbol, 0, 0, ORDER_TIME_GTC, 0, "Protection SellStop");
                }
                else if(type == POSITION_TYPE_SELL)
                {
-                  double buyPrice = NormalizeDouble(ask + (LossDistancePts * _Point), _Digits);
+                  double buyPrice = NormalizeDouble(ask + (FixedStopPts * _Point), _Digits);
                   trade.BuyStop(LotSize, buyPrice, _Symbol, 0, 0, ORDER_TIME_GTC, 0, "Protection BuyStop");
                }
                break;
@@ -178,7 +206,7 @@ void ExecuteLogic()
       }
       else
       {
-         ManagePendingOrder(); // تەنها کاتێک چووە قازانج دەستپێدەکات بە جوڵاندنی ئۆردەرەکە بۆ ١ پیپ
+         ManagePendingOrder(); // بەڕێوەبردنی تراپ لە قازانج و زەرەردا
       }
    }
 }
