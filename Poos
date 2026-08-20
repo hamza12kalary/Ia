@@ -1,5 +1,5 @@
 //+------------------------------------------------------------------+
-//|                                             Trailing_Pending.mq5 |
+//|                                                        kerzl.mq5 |
 //+------------------------------------------------------------------+
 #property copyright "Trading Bot"
 #property version   "1.00"
@@ -28,8 +28,11 @@ void OnTick()
    if(CheckPosition(POSITION_TYPE_BUY) && !CheckPending(ORDER_TYPE_SELL_STOP))
    {
       double sellPendingPrice = bid - (PendingPips * pip);
-      MqlTradeRequest req = {0};
-      MqlTradeResult  res = {0};
+      MqlTradeRequest req;
+      MqlTradeResult  res;
+      ZeroMemory(req);
+      ZeroMemory(res);
+
       req.action = TRADE_ACTION_PENDING;
       req.symbol = _Symbol;
       req.volume = LotSize;
@@ -45,8 +48,11 @@ void OnTick()
    if(CheckPosition(POSITION_TYPE_SELL) && !CheckPending(ORDER_TYPE_BUY_STOP))
    {
       double buyPendingPrice = ask + (PendingPips * pip);
-      MqlTradeRequest req = {0};
-      MqlTradeResult  res = {0};
+      MqlTradeRequest req;
+      MqlTradeResult  res;
+      ZeroMemory(req);
+      ZeroMemory(res);
+
       req.action = TRADE_ACTION_PENDING;
       req.symbol = _Symbol;
       req.volume = LotSize;
@@ -102,8 +108,11 @@ void ManageTrailing(double ask, double bid, double pip, int digits)
             double newSL = NormalizeDouble(bid - (TrailingStopPips * pip), digits);
             if(newSL > currentSL + (0.1 * pip))
             {
-               MqlTradeRequest req = {0};
-               MqlTradeResult  res = {0};
+               MqlTradeRequest req;
+               MqlTradeResult  res;
+               ZeroMemory(req);
+               ZeroMemory(res);
+
                req.action   = TRADE_ACTION_SLTP;
                req.position = ticket;
                req.sl       = newSL;
@@ -116,8 +125,11 @@ void ManageTrailing(double ask, double bid, double pip, int digits)
             double newSL = NormalizeDouble(ask + (TrailingStopPips * pip), digits);
             if(currentSL == 0 || newSL < currentSL - (0.1 * pip))
             {
-               MqlTradeRequest req = {0};
-               MqlTradeResult  res = {0};
+               MqlTradeRequest req;
+               MqlTradeResult  res;
+               ZeroMemory(req);
+               ZeroMemory(res);
+
                req.action   = TRADE_ACTION_SLTP;
                req.position = ticket;
                req.sl       = newSL;
