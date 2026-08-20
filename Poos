@@ -1,143 +1,302 @@
 //+------------------------------------------------------------------+
-//|                                                        kerzl.mq5 |
+//| XAUUSD_VolumeBreakout_V2.mq5                                    |
 //+------------------------------------------------------------------+
-#property copyright "Trading Bot"
-#property version   "1.00"
+#property strict
 
-input double LotSize          = 0.01; // قەبارەی لۆت
-input double TrailingStopPips = 1.0;  // دووری ستۆپ ترەیلینگ (١ پیپ)
-input double PendingPips      = 2.0;  // دووری فەرمانی پێندینگ (٢ پیپ)
-input double StopLossPips     = 10.0; // ستۆپ لۆسی سەرەتایی
-input double TakeProfitPips   = 20.0; // تەیک پرۆفیت
+#include <Trade/Trade.mqh>
+CTrade trade;
 
-void OnTick()
+//==================== SETTINGS =====================================
+
+input double LotSize          = 0.01;
+
+// Pending distance
+input int DistancePoints      = 100;
+
+// SL / TP
+input int StopLossPoints      = 100;
+input int TakeProfitPoints    = 300;
+
+// Trailing Stop
+input bool UseTrailingStop    = true;
+input int TrailingStopPoints  = 100;
+
+//==================== VOLUME FILTER ================================
+
+input bool UseVolumeFilter    = true;
+input int VolumePeriod        = 20;
+
+// Current volume must be greater than Average Volume * VolumeMultiplier
+input double VolumeMultiplier = 1.50;
+
+//==================== BREAKOUT FILTER ==============================
+
+input bool UseBreakoutFilter  = true;
+input int BreakoutLookback    = 10;
+
+//==================== SPREAD FILTER ================================
+
+input bool UseSpreadFilter    = true;
+input int MaxSpreadPoints     = 80;
+
+//==================== MAGIC ========================================
+
+input ulong MagicNumber       = 20260819;
+
+//+------------------------------------------------------------------+
+//| Count open positions                                             |
+//+------------------------------------------------------------------+
+int CountOpenPositions()
 {
-   double ask   = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
-   double bid   = SymbolInfoDouble(_Symbol, SYMBOL_BID);
-   double point = SymbolInfoDouble(_Symbol, SYMBOL_POINT);
-   int    digits= (int)SymbolInfoInteger(_Symbol, SYMBOL_DIGITS);
-
-   double pip = point;
-   if(digits == 3 || digits == 5) pip = point * 10;
-   else if(digits == 2 && _Symbol == "XAUUSD") pip = 0.1;
-
-   // 1. بەڕێوەبردنی Trailing Stop
-   ManageTrailing(ask, bid, pip, digits);
-
-   // 2. ئەگەر پۆزیشن BUY بوو و فەرمانی SELL STOP نەبوو
-   if(CheckPosition(POSITION_TYPE_BUY) && !CheckPending(ORDER_TYPE_SELL_STOP))
-   {
-      double sellPendingPrice = bid - (PendingPips * pip);
-      MqlTradeRequest req;
-      MqlTradeResult  res;
-      ZeroMemory(req);
-      ZeroMemory(res);
-
-      req.action = TRADE_ACTION_PENDING;
-      req.symbol = _Symbol;
-      req.volume = LotSize;
-      req.type   = ORDER_TYPE_SELL_STOP;
-      req.price  = NormalizeDouble(sellPendingPrice, digits);
-      req.sl     = NormalizeDouble(sellPendingPrice + (StopLossPips * pip), digits);
-      req.tp     = NormalizeDouble(sellPendingPrice - (TakeProfitPips * pip), digits);
-      
-      bool success = OrderSend(req, res);
-   }
-
-   // 3. ئەگەر پۆزیشن SELL بوو و فەرمانی BUY STOP نەبوو
-   if(CheckPosition(POSITION_TYPE_SELL) && !CheckPending(ORDER_TYPE_BUY_STOP))
-   {
-      double buyPendingPrice = ask + (PendingPips * pip);
-      MqlTradeRequest req;
-      MqlTradeResult  res;
-      ZeroMemory(req);
-      ZeroMemory(res);
-
-      req.action = TRADE_ACTION_PENDING;
-      req.symbol = _Symbol;
-      req.volume = LotSize;
-      req.type   = ORDER_TYPE_BUY_STOP;
-      req.price  = NormalizeDouble(buyPendingPrice, digits);
-      req.sl     = NormalizeDouble(buyPendingPrice - (StopLossPips * pip), digits);
-      req.tp     = NormalizeDouble(buyPendingPrice + (TakeProfitPips * pip), digits);
-      
-      bool success = OrderSend(req, res);
-   }
-}
-
-bool CheckPosition(ENUM_POSITION_TYPE posType)
-{
-   for(int i = 0; i < PositionsTotal(); i++)
+   int count = 0;
+   for(int i = PositionsTotal() - 1; i >= 0; i--)
    {
       ulong ticket = PositionGetTicket(i);
-      if(ticket > 0)
+      if(ticket == 0) continue;
+
+      if(PositionGetString(POSITION_SYMBOL) == _Symbol &&
+         (ulong)PositionGetInteger(POSITION_MAGIC) == MagicNumber)
       {
-         if(PositionGetInteger(POSITION_TYPE) == posType)
-            return true;
+         count++;
       }
    }
-   return false;
+   return count;
 }
 
-bool CheckPending(ENUM_ORDER_TYPE orderType)
+//+------------------------------------------------------------------+
+//| Count pending orders                                             |
+//+------------------------------------------------------------------+
+int CountPendingOrders()
 {
-   for(int i = 0; i < OrdersTotal(); i++)
+   int count = 0;
+   for(int i = OrdersTotal() - 1; i >= 0; i--)
    {
       ulong ticket = OrderGetTicket(i);
-      if(ticket > 0)
+      if(ticket == 0) continue;
+
+      if(OrderGetString(ORDER_SYMBOL) == _Symbol &&
+         (ulong)OrderGetInteger(ORDER_MAGIC) == MagicNumber)
       {
-         if(OrderGetInteger(ORDER_TYPE) == orderType)
-            return true;
+         count++;
       }
    }
+   return count;
+}
+
+//+------------------------------------------------------------------+
+//| Delete pending orders                                            |
+//+------------------------------------------------------------------+
+void DeletePendingOrders()
+{
+   for(int i = OrdersTotal() - 1; i >= 0; i--)
+   {
+      ulong ticket = OrderGetTicket(i);
+      if(ticket == 0) continue;
+
+      if(OrderGetString(ORDER_SYMBOL) == _Symbol &&
+         (ulong)OrderGetInteger(ORDER_MAGIC) == MagicNumber)
+      {
+         trade.OrderDelete(ticket);
+      }
+   }
+}
+
+//+------------------------------------------------------------------+
+//| Get average tick volume                                         |
+//+------------------------------------------------------------------+
+double GetAverageVolume()
+{
+   long volumes[];
+   ArraySetAsSeries(volumes, true);
+
+   int copied = CopyTickVolume(_Symbol, PERIOD_CURRENT, 1, VolumePeriod, volumes);
+
+   if(copied <= 0) return 0;
+
+   double sum = 0;
+   for(int i = 0; i < copied; i++)
+      sum += (double)volumes[i];
+
+   return sum / copied;
+}
+
+//+------------------------------------------------------------------+
+//| Volume confirmation                                              |
+//+------------------------------------------------------------------+
+bool VolumeConfirmed()
+{
+   if(!UseVolumeFilter) return true;
+
+   long volumes[];
+   ArraySetAsSeries(volumes, true);
+   if(CopyTickVolume(_Symbol, PERIOD_CURRENT, 0, 1, volumes) <= 0)
+      return false;
+
+   long currentVolume = volumes[0];
+   double averageVolume = GetAverageVolume();
+
+   if(averageVolume <= 0) return false;
+
+   return ((double)currentVolume >= (averageVolume * VolumeMultiplier));
+}
+
+//+------------------------------------------------------------------+
+//| Breakout confirmation                                            |
+//+------------------------------------------------------------------+
+bool BreakoutConfirmed()
+{
+   if(!UseBreakoutFilter) return true;
+
+   double highs[], lows[];
+   ArraySetAsSeries(highs, true);
+   ArraySetAsSeries(lows, true);
+
+   if(CopyHigh(_Symbol, PERIOD_CURRENT, 1, BreakoutLookback, highs) <= 0) return false;
+   if(CopyLow(_Symbol, PERIOD_CURRENT, 1, BreakoutLookback, lows) <= 0) return false;
+
+   double highest = highs[0];
+   double lowest = lows[0];
+
+   for(int i = 1; i < BreakoutLookback; i++)
+   {
+      if(highs[i] > highest) highest = highs[i];
+      if(lows[i] < lowest) lowest = lows[i];
+   }
+
+   double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+   double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+
+   // ئەگەر نرخ لە نزیک یان دەرەوەی بەرزترین/نزمترین ئاستی ڕابردوو بێت
+   if(ask >= highest || bid <= lowest)
+      return true;
+
    return false;
 }
 
-void ManageTrailing(double ask, double bid, double pip, int digits)
+//+------------------------------------------------------------------+
+//| Spread filter                                                     |
+//+------------------------------------------------------------------+
+bool SpreadOK()
 {
-   for(int i = 0; i < PositionsTotal(); i++)
+   if(!UseSpreadFilter) return true;
+
+   double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+   double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+
+   double spreadPoints = (ask - bid) / _Point;
+
+   return (spreadPoints <= MaxSpreadPoints);
+}
+
+//+------------------------------------------------------------------+
+//| Place pending orders                                             |
+//+------------------------------------------------------------------+
+void PlaceBothPendingOrders()
+{
+   if(!SpreadOK()) return;
+   if(!VolumeConfirmed()) return;
+   if(!BreakoutConfirmed()) return;
+
+   DeletePendingOrders();
+
+   double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+   double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+
+   trade.SetExpertMagicNumber(MagicNumber);
+   trade.SetDeviationInPoints(50);
+
+   // BUY STOP
+   double buyPrice = NormalizeDouble(ask + DistancePoints * _Point, _Digits);
+   double buySL    = NormalizeDouble(buyPrice - StopLossPoints * _Point, _Digits);
+   double buyTP    = NormalizeDouble(buyPrice + TakeProfitPoints * _Point, _Digits);
+
+   trade.BuyStop(LotSize, buyPrice, _Symbol, buySL, buyTP, ORDER_TIME_GTC, 0, "Volume Breakout BUY");
+
+   // SELL STOP
+   double sellPrice = NormalizeDouble(bid - DistancePoints * _Point, _Digits);
+   double sellSL    = NormalizeDouble(sellPrice + StopLossPoints * _Point, _Digits);
+   double sellTP    = NormalizeDouble(sellPrice - TakeProfitPoints * _Point, _Digits);
+
+   trade.SellStop(LotSize, sellPrice, _Symbol, sellSL, sellTP, ORDER_TIME_GTC, 0, "Volume Breakout SELL");
+}
+
+//+------------------------------------------------------------------+
+//| Trailing Stop                                                     |
+//+------------------------------------------------------------------+
+void ApplyTrailingStop()
+{
+   if(!UseTrailingStop) return;
+
+   for(int i = PositionsTotal() - 1; i >= 0; i--)
    {
       ulong ticket = PositionGetTicket(i);
-      if(ticket > 0)
-      {
-         double currentSL = PositionGetDouble(POSITION_SL);
-         ENUM_POSITION_TYPE pType = (ENUM_POSITION_TYPE)PositionGetInteger(POSITION_TYPE);
-         
-         if(pType == POSITION_TYPE_BUY)
-         {
-            double newSL = NormalizeDouble(bid - (TrailingStopPips * pip), digits);
-            if(newSL > currentSL + (0.1 * pip))
-            {
-               MqlTradeRequest req;
-               MqlTradeResult  res;
-               ZeroMemory(req);
-               ZeroMemory(res);
+      if(ticket == 0) continue;
 
-               req.action   = TRADE_ACTION_SLTP;
-               req.position = ticket;
-               req.sl       = newSL;
-               req.tp       = PositionGetDouble(POSITION_TP);
-               bool success = OrderSend(req, res);
+      if(PositionGetString(POSITION_SYMBOL) != _Symbol) continue;
+      if((ulong)PositionGetInteger(POSITION_MAGIC) != MagicNumber) continue;
+
+      long type        = PositionGetInteger(POSITION_TYPE);
+      double currentSL = PositionGetDouble(POSITION_SL);
+      double currentTP = PositionGetDouble(POSITION_TP);
+      double openPrice = PositionGetDouble(POSITION_PRICE_OPEN);
+
+      if(type == POSITION_TYPE_BUY)
+      {
+         double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+         if(bid - openPrice > TrailingStopPoints * _Point)
+         {
+            double newSL = NormalizeDouble(bid - TrailingStopPoints * _Point, _Digits);
+            if(newSL > currentSL || currentSL == 0)
+            {
+               trade.PositionModify(ticket, newSL, currentTP);
             }
          }
-         else if(pType == POSITION_TYPE_SELL)
-         {
-            double newSL = NormalizeDouble(ask + (TrailingStopPips * pip), digits);
-            if(currentSL == 0 || newSL < currentSL - (0.1 * pip))
-            {
-               MqlTradeRequest req;
-               MqlTradeResult  res;
-               ZeroMemory(req);
-               ZeroMemory(res);
+      }
 
-               req.action   = TRADE_ACTION_SLTP;
-               req.position = ticket;
-               req.sl       = newSL;
-               req.tp       = PositionGetDouble(POSITION_TP);
-               bool success = OrderSend(req, res);
+      if(type == POSITION_TYPE_SELL)
+      {
+         double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+         if(openPrice - ask > TrailingStopPoints * _Point)
+         {
+            double newSL = NormalizeDouble(ask + TrailingStopPoints * _Point, _Digits);
+            if(newSL < currentSL || currentSL == 0)
+            {
+               trade.PositionModify(ticket, newSL, currentTP);
             }
          }
       }
    }
 }
+
+//+------------------------------------------------------------------+
+//| Expert initialization                                            |
+//+------------------------------------------------------------------+
+int OnInit()
+{
+   trade.SetExpertMagicNumber(MagicNumber);
+   return(INIT_SUCCEEDED);
+}
+
+//+------------------------------------------------------------------+
+//| Main                                                             |
+//+------------------------------------------------------------------+
+void OnTick()
+{
+   ApplyTrailingStop();
+
+   int openPositions = CountOpenPositions();
+   int pendingOrders = CountPendingOrders();
+
+   if(openPositions > 0 && pendingOrders > 0)
+   {
+      DeletePendingOrders();
+      return;
+   }
+
+   if(openPositions == 0 && pendingOrders == 0)
+   {
+      PlaceBothPendingOrders();
+   }
+}
+//+------------------------------------------------------------------+
 
