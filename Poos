@@ -1,5 +1,5 @@
 //+------------------------------------------------------------------+
-//| TikTok_Volume_Based_Hedge_EA.mq5                                 |
+//| TikTok_Always_Trading_EA.mq5                                     |
 //+------------------------------------------------------------------+
 #property strict
 
@@ -59,8 +59,6 @@ void CloseAndCleanAll()
 }
 
 //+------------------------------------------------------------------+
-// وەرگرتنی زانیاری قازانج/زەرەری پۆزیشنی کراوە
-//+------------------------------------------------------------------+
 double GetCurrentPositionProfit()
 {
    for(int i = PositionsTotal() - 1; i >= 0; i--)
@@ -75,13 +73,11 @@ double GetCurrentPositionProfit()
 }
 
 //+------------------------------------------------------------------+
-// بەڕێوەبردنی ئۆردەری هەڵپەسێردراو (تەنها کاتێک لە قازانجدایە دەجوڵێت)
-//+------------------------------------------------------------------+
 void ManagePendingOrder()
 {
    double profit = GetCurrentPositionProfit();
 
-   // کاتێک لە زەرەردایە ➔ ستۆپەکە لە دووری ١٠ پیپ جێگیر دەمێنێتەوە و ناجوڵێت
+   // کاتێک لە زەرەردایە ➔ ستۆپەکە لە ١٠ پیپەکەدا نەگۆڕە
    if(profit <= 0) return;
 
    double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
@@ -95,7 +91,6 @@ void ManagePendingOrder()
          long type         = OrderGetInteger(ORDER_TYPE);
          double openPrice = OrderGetDouble(ORDER_PRICE_OPEN);
 
-         // کاتێک لە قازانجدایە، ئۆردەرەکە دێنێتە ۱ پیپی (10 Points) پشتی نرخەکە
          if(type == ORDER_TYPE_SELL_STOP)
          {
             double targetPrice = NormalizeDouble(bid - (ProfitDistancePts * _Point), _Digits);
@@ -117,23 +112,21 @@ void ManagePendingOrder()
 }
 
 //+------------------------------------------------------------------+
-// دۆزینەوەی ئاڕاستەی بازار بەپێی Volume و مۆمی پێشوو
+// دیاریکردنی ئاڕاستەی مۆمی پێشوو (بە بێ گوێدانە Volume)
 //+------------------------------------------------------------------+
-int GetVolumeDirection()
+int GetCandleDirection()
 {
    double open1  = iOpen(_Symbol, _Period, 1);
    double close1 = iClose(_Symbol, _Period, 1);
 
-   if(close1 > open1)
+   if(close1 >= open1)
       return 1;  // BUY
-   else if(close1 < open1)
+   else
       return -1; // SELL
-      
-   return 0;
 }
 
 //+------------------------------------------------------------------+
-// Main EA Logic
+// Main Logic
 //+------------------------------------------------------------------+
 void ExecuteLogic()
 {
@@ -143,40 +136,40 @@ void ExecuteLogic()
    int openPositions = CountOpenPositions();
    int pendingOrders = CountPendingOrders();
 
-   // 1. کاتێک نرخەکە لە Pending Orderی دا و بووە 2 پۆزیشن ➔ ڕاستەوخۆ هەردووکیان دابخە
+   // 1. کاتێک نرخەکە لە Pending Orderی دا (بوو بە 2 پۆزیشن) ➔ ڕاستەوخۆ هەردووکیان دابخە
    if(openPositions >= 2)
    {
       CloseAndCleanAll();
       return;
    }
 
-   // 2. کاتێک هیچ پۆزیشنێک نییە ➔ بەپێی Volume و ئاڕاستەی مۆمی ۱ ئۆردەر دەکاتەوە
+   // 2. دایم بە بێ وەستان ئۆردەر دەکاتەوە
    if(openPositions == 0)
    {
       CloseAndCleanAll();
 
       double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
       double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
-      int direction = GetVolumeDirection();
+      int direction = GetCandleDirection();
 
-      if(direction == 1) // BUY logic
+      if(direction == 1) // BUY
       {
-         if(trade.Buy(LotSize, _Symbol, ask, 0, 0, "Volume Buy"))
+         if(trade.Buy(LotSize, _Symbol, ask, 0, 0, "Always Buy"))
          {
             double sellPrice = NormalizeDouble(bid - (FixedStopPts * _Point), _Digits);
             trade.SellStop(LotSize, sellPrice, _Symbol, 0, 0, ORDER_TIME_GTC, 0, "Protection SellStop");
          }
       }
-      else if(direction == -1) // SELL logic
+      else if(direction == -1) // SELL
       {
-         if(trade.Sell(LotSize, _Symbol, bid, 0, 0, "Volume Sell"))
+         if(trade.Sell(LotSize, _Symbol, bid, 0, 0, "Always Sell"))
          {
             double buyPrice = NormalizeDouble(ask + (FixedStopPts * _Point), _Digits);
             trade.BuyStop(LotSize, buyPrice, _Symbol, 0, 0, ORDER_TIME_GTC, 0, "Protection BuyStop");
          }
       }
    }
-   // 3. کاتێک ۱ پۆزیشن کراوەیە
+   // 3. کاتێک ١ پۆزیشن کراوەیە ➔ بەڕێوەبردنی تراپ و Trailing
    else if(openPositions == 1)
    {
       if(pendingOrders == 0)
@@ -206,7 +199,7 @@ void ExecuteLogic()
       }
       else
       {
-         ManagePendingOrder(); // بەڕێوەبردنی تراپ لە قازانج و زەرەردا
+         ManagePendingOrder();
       }
    }
 }
