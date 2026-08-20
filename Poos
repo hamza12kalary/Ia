@@ -4,12 +4,11 @@
 #property copyright "Trading Bot"
 #property version   "1.00"
 
-// هەڵبژاردنەکانی بەکارهێنەر
-input double LotSize         = 0.01; // قەبارەی لۆت
-input double TrailingStopPips= 1.0;  // دووری ستۆپ ترەیلینگ (١ پیپ)
-input double PendingPips     = 2.0;  // دووری فەرمانی پێندینگ (٢ پیپ)
-input double StopLossPips    = 10.0; // ستۆپ لۆسی سەرەتایی (بە پیپ)
-input double TakeProfitPips  = 20.0; // تەیک پرۆفیت (بە پیپ)
+input double LotSize          = 0.01; // قەبارەی لۆت
+input double TrailingStopPips = 1.0;  // دووری ستۆپ ترەیلینگ (١ پیپ)
+input double PendingPips      = 2.0;  // دووری فەرمانی پێندینگ (٢ پیپ)
+input double StopLossPips     = 10.0; // ستۆپ لۆسی سەرەتایی
+input double TakeProfitPips   = 20.0; // تەیک پرۆفیت
 
 void OnTick()
 {
@@ -18,16 +17,15 @@ void OnTick()
    double point = SymbolInfoDouble(_Symbol, SYMBOL_POINT);
    int    digits= (int)SymbolInfoInteger(_Symbol, SYMBOL_DIGITS);
 
-   // دیاریکردنی بەهای ١ پیپ (بۆ زێڕ یان جۆری تر)
    double pip = point;
    if(digits == 3 || digits == 5) pip = point * 10;
-   else if(digits == 2 && _Symbol == "XAUUSD") pip = 0.1; // تایبەت بۆ زێڕ
+   else if(digits == 2 && _Symbol == "XAUUSD") pip = 0.1;
 
-   // 1. بەڕێوەبردنی Trailing Stopی ١ پیپ بۆ پۆزیشنە کراوەکان
-   ManageTrailingStop(ask, bid, pip);
+   // 1. بەڕێوەبردنی Trailing Stop
+   ManageTrailing(ask, bid, pip, digits);
 
-   // 2. ئەگەر پۆزیشنێکی BUY کرابووەوە و هیچ SELL STOPێک نەبوو -> SELL STOP بە دووری 2 پیپ دابنێ
-   if(HasPosition(POSITION_TYPE_BUY) && !HasPendingOrder(ORDER_TYPE_SELL_STOP))
+   // 2. ئەگەر پۆزیشن BUY بوو و فەرمانی SELL STOP نەبوو
+   if(CheckPosition(POSITION_TYPE_BUY) && !CheckPending(ORDER_TYPE_SELL_STOP))
    {
       double sellPendingPrice = bid - (PendingPips * pip);
       MqlTradeRequest req = {0};
@@ -40,11 +38,11 @@ void OnTick()
       req.sl     = NormalizeDouble(sellPendingPrice + (StopLossPips * pip), digits);
       req.tp     = NormalizeDouble(sellPendingPrice - (TakeProfitPips * pip), digits);
       
-      if(!OrderSend(req, res)) Print("Error Sell Stop: ", GetLastError());
+      bool success = OrderSend(req, res);
    }
 
-   // 3. ئەگەر پۆزیشنێکی SELL کرابووەوە و هیچ BUY STOPێک نەبوو -> BUY STOP بە دووری 2 پیپ دابنێ
-   if(HasPosition(POSITION_TYPE_SELL) && !HasPendingOrder(ORDER_TYPE_BUY_STOP))
+   // 3. ئەگەر پۆزیشن SELL بوو و فەرمانی BUY STOP نەبوو
+   if(CheckPosition(POSITION_TYPE_SELL) && !CheckPending(ORDER_TYPE_BUY_STOP))
    {
       double buyPendingPrice = ask + (PendingPips * pip);
       MqlTradeRequest req = {0};
@@ -57,72 +55,74 @@ void OnTick()
       req.sl     = NormalizeDouble(buyPendingPrice - (StopLossPips * pip), digits);
       req.tp     = NormalizeDouble(buyPendingPrice + (TakeProfitPips * pip), digits);
       
-      if(!OrderSend(req, res)) Print("Error Buy Stop: ", GetLastError());
+      bool success = OrderSend(req, res);
    }
 }
 
-// ------------------------------------------------------------------
-// فەنکشنی پشکنینی پۆزیشنەکان
-bool HasPosition(ENUM_POSITION_TYPE type)
+bool CheckPosition(ENUM_POSITION_TYPE posType)
 {
    for(int i = 0; i < PositionsTotal(); i++)
    {
       ulong ticket = PositionGetTicket(i);
-      if(ticket > 0 && PositionGetInteger(POSITION_TYPE) == type)
-         return true;
+      if(ticket > 0)
+      {
+         if(PositionGetInteger(POSITION_TYPE) == posType)
+            return true;
+      }
    }
    return false;
 }
 
-// فەنکشنی پشکنینی فەرمانە پێندینگەکان
-bool HasPendingOrder(ENUM_ORDER_TYPE type)
+bool CheckPending(ENUM_ORDER_TYPE orderType)
 {
    for(int i = 0; i < OrdersTotal(); i++)
    {
       ulong ticket = OrderGetTicket(i);
-      if(ticket > 0 && OrderGetInteger(ORDER_TYPE) == type)
-         return true;
+      if(ticket > 0)
+      {
+         if(OrderGetInteger(ORDER_TYPE) == orderType)
+            return true;
+      }
    }
    return false;
 }
 
-// فەنکشنی Trailing Stop بە دووری 1 پیپ
-void ManageTrailingStop(double ask, double bid, double pip)
+void ManageTrailing(double ask, double bid, double pip, int digits)
 {
-   int digits = (int)SymbolInfoInteger(_Symbol, SYMBOL_DIGITS);
    for(int i = 0; i < PositionsTotal(); i++)
    {
       ulong ticket = PositionGetTicket(i);
       if(ticket > 0)
       {
          double currentSL = PositionGetDouble(POSITION_SL);
+         ENUM_POSITION_TYPE pType = (ENUM_POSITION_TYPE)PositionGetInteger(POSITION_TYPE);
          
-         if(PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_BUY)
+         if(pType == POSITION_TYPE_BUY)
          {
             double newSL = NormalizeDouble(bid - (TrailingStopPips * pip), digits);
-            if(newSL > currentSL + (0.1 * pip)) // تەنها کاتێک ستۆپ بباتە سەرەوە کە نرخ سەرکەوێت
+            if(newSL > currentSL + (0.1 * pip))
             {
                MqlTradeRequest req = {0};
                MqlTradeResult  res = {0};
-               req.action = TRADE_ACTION_SLTP;
+               req.action   = TRADE_ACTION_SLTP;
                req.position = ticket;
-               req.sl = newSL;
-               req.tp = PositionGetDouble(POSITION_TP);
-               if(!OrderSend(req, res)) Print("Trailing error BUY: ", GetLastError());
+               req.sl       = newSL;
+               req.tp       = PositionGetDouble(POSITION_TP);
+               bool success = OrderSend(req, res);
             }
          }
-         else if(PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_SELL)
+         else if(pType == POSITION_TYPE_SELL)
          {
             double newSL = NormalizeDouble(ask + (TrailingStopPips * pip), digits);
-            if(currentSL == 0 || newSL < currentSL - (0.1 * pip)) // تەنها کاتێک ستۆپ بباتە خوارەوە کە نرخ دابەزێت
+            if(currentSL == 0 || newSL < currentSL - (0.1 * pip))
             {
                MqlTradeRequest req = {0};
                MqlTradeResult  res = {0};
-               req.action = TRADE_ACTION_SLTP;
+               req.action   = TRADE_ACTION_SLTP;
                req.position = ticket;
-               req.sl = newSL;
-               req.tp = PositionGetDouble(POSITION_TP);
-               if(!OrderSend(req, res)) Print("Trailing error SELL: ", GetLastError());
+               req.sl       = newSL;
+               req.tp       = PositionGetDouble(POSITION_TP);
+               bool success = OrderSend(req, res);
             }
          }
       }
