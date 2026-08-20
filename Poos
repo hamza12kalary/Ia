@@ -1,5 +1,5 @@
 //+------------------------------------------------------------------+
-//| TikTok_Single_Order_EA.mq5                                       |
+//| TikTok_Smart_Dynamic_Hedge_EA.mq5                                |
 //+------------------------------------------------------------------+
 #property strict
 
@@ -8,9 +8,10 @@ CTrade trade;
 
 //==================== INPUT SETTINGS ===============================
 
-input double LotSize        = 0.01;  // لۆت
-input int    DistancePoints = 10;    // دووری ئۆردەرەکە (10 points = 1 Pip)
-input ulong  MagicNumber    = 111222;
+input double LotSize          = 0.01;  // لۆت
+input int    LossDistancePts  = 200;   // دووری ئۆردەر کاتێک لە زەرەردایە (200 points = 20 Pips)
+input int    ProfitDistancePts= 10;    // دووری ئۆردەر کاتێک دەچێتە قازانج (10 points = 1 Pip)
+input ulong  MagicNumber      = 111222;
 
 //+------------------------------------------------------------------+
 int CountOpenPositions()
@@ -37,8 +38,16 @@ int CountPendingOrders()
    return count;
 }
 
-void DeleteAllPending()
+void CloseAndCleanAll()
 {
+   for(int i = PositionsTotal() - 1; i >= 0; i--)
+   {
+      ulong ticket = PositionGetTicket(i);
+      if(ticket > 0 && PositionGetString(POSITION_SYMBOL) == _Symbol && (ulong)PositionGetInteger(POSITION_MAGIC) == MagicNumber)
+      {
+         trade.PositionClose(ticket);
+      }
+   }
    for(int i = OrdersTotal() - 1; i >= 0; i--)
    {
       ulong ticket = OrderGetTicket(i);
@@ -50,10 +59,31 @@ void DeleteAllPending()
 }
 
 //+------------------------------------------------------------------+
-// جوڵاندنی ئۆردەری هەڵپەسێردراو بەدوای نرخدا (Trailing Pending Order)
+// وەرگرتنی زانیاری قازانج/زەرەری پۆزیشنی کراوە
 //+------------------------------------------------------------------+
-void UpdatePendingDistance()
+double GetCurrentPositionProfit()
 {
+   for(int i = PositionsTotal() - 1; i >= 0; i--)
+   {
+      ulong ticket = PositionGetTicket(i);
+      if(ticket > 0 && PositionGetString(POSITION_SYMBOL) == _Symbol && (ulong)PositionGetInteger(POSITION_MAGIC) == MagicNumber)
+      {
+         return PositionGetDouble(POSITION_PROFIT);
+      }
+   }
+   return 0.0;
+}
+
+//+------------------------------------------------------------------+
+// بەڕێوەبردنی ئۆردەری هەڵپەسێردراو (تەنها کاتێک لە قازانجدایە دەجوڵێت)
+//+------------------------------------------------------------------+
+void ManagePendingOrder()
+{
+   double profit = GetCurrentPositionProfit();
+
+   // کاتێک لە زەرەردایە ➔ ڕێگە مەدە ئۆردەرەکە بپڕێت یان بگوێزرێتەوە (نەگۆڕ بێت)
+   if(profit <= 0) return;
+
    double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
    double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
 
@@ -65,18 +95,19 @@ void UpdatePendingDistance()
          long type         = OrderGetInteger(ORDER_TYPE);
          double openPrice = OrderGetDouble(ORDER_PRICE_OPEN);
 
+         // کاتێک لە قازانجدایە، ئۆردەرەکە دێنێتە ۱ پیپی (10 Points) پشتی نرخەکە
          if(type == ORDER_TYPE_SELL_STOP)
          {
-            double targetPrice = NormalizeDouble(bid - (DistancePoints * _Point), _Digits);
-            if(MathAbs(targetPrice - openPrice) >= _Point)
+            double targetPrice = NormalizeDouble(bid - (ProfitDistancePts * _Point), _Digits);
+            if(targetPrice > openPrice)
             {
                trade.OrderModify(ticket, targetPrice, 0, 0, ORDER_TIME_GTC, 0);
             }
          }
          else if(type == ORDER_TYPE_BUY_STOP)
          {
-            double targetPrice = NormalizeDouble(ask + (DistancePoints * _Point), _Digits);
-            if(MathAbs(targetPrice - openPrice) >= _Point)
+            double targetPrice = NormalizeDouble(ask + (ProfitDistancePts * _Point), _Digits);
+            if(targetPrice < openPrice)
             {
                trade.OrderModify(ticket, targetPrice, 0, 0, ORDER_TIME_GTC, 0);
             }
@@ -96,21 +127,28 @@ void ExecuteLogic()
    int openPositions = CountOpenPositions();
    int pendingOrders = CountPendingOrders();
 
-   // 1. کاتێک هیچ پۆزیشنێک نییە، تەنها ۱ پۆزیشنی BUY دەکاتەوە
+   // 1. کاتێک نرخ گەڕایەوە و لە SELL STOPی دا (بوو بە 2 پۆزیشن) ➔ ڕاستەوخۆ هەموو شتێک دابخە
+   if(openPositions >= 2)
+   {
+      CloseAndCleanAll();
+      return;
+   }
+
+   // 2. کاتێک هیچ پۆزیشنێک کراوە نییە ➔ BUY بکەرەوە و SELL STOP لە دووری 20 پیپ (200 points) دابنێ
    if(openPositions == 0)
    {
-      DeleteAllPending(); // دڵنیابوونەوە لە سڕینەوەی ئۆردەرە کۆنەکان
+      CloseAndCleanAll();
 
       double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
       double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
 
-      if(trade.Buy(LotSize, _Symbol, ask, 0, 0, "Single Buy Order"))
+      if(trade.Buy(LotSize, _Symbol, ask, 0, 0, "Initial Buy"))
       {
-         double sellPrice = NormalizeDouble(bid - (DistancePoints * _Point), _Digits);
+         double sellPrice = NormalizeDouble(bid - (LossDistancePts * _Point), _Digits);
          trade.SellStop(LotSize, sellPrice, _Symbol, 0, 0, ORDER_TIME_GTC, 0, "Protection SellStop");
       }
    }
-   // 2. کاتێک تەنها ١ پۆزیشن کراوەیە، ئۆردەرە هەڵپەسێردراوەکە بەدوای نرخدا دەجووڵێنێت
+   // 3. کاتێک ١ پۆزیشن کراوەیە
    else if(openPositions == 1)
    {
       if(pendingOrders == 0)
@@ -126,12 +164,12 @@ void ExecuteLogic()
 
                if(type == POSITION_TYPE_BUY)
                {
-                  double sellPrice = NormalizeDouble(bid - (DistancePoints * _Point), _Digits);
+                  double sellPrice = NormalizeDouble(bid - (LossDistancePts * _Point), _Digits);
                   trade.SellStop(LotSize, sellPrice, _Symbol, 0, 0, ORDER_TIME_GTC, 0, "Protection SellStop");
                }
                else if(type == POSITION_TYPE_SELL)
                {
-                  double buyPrice = NormalizeDouble(ask + (DistancePoints * _Point), _Digits);
+                  double buyPrice = NormalizeDouble(ask + (LossDistancePts * _Point), _Digits);
                   trade.BuyStop(LotSize, buyPrice, _Symbol, 0, 0, ORDER_TIME_GTC, 0, "Protection BuyStop");
                }
                break;
@@ -140,7 +178,7 @@ void ExecuteLogic()
       }
       else
       {
-         UpdatePendingDistance(); // جوڵاندنی ئۆردەرەکە بە بەردەوامی
+         ManagePendingOrder(); // تەنها کاتێک چووە قازانج دەستپێدەکات بە جوڵاندنی ئۆردەرەکە بۆ ١ پیپ
       }
    }
 }
