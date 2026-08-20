@@ -1,5 +1,5 @@
 //+------------------------------------------------------------------+
-//| TikTok_Always_Trading_EA.mq5                                     |
+//| TikTok_Immediate_Tick_EA.mq5                                     |
 //+------------------------------------------------------------------+
 #property strict
 
@@ -12,6 +12,8 @@ input double LotSize          = 0.01;  // لۆت
 input int    FixedStopPts     = 100;   // دووری ستۆپی جێگیر لە زەرەردا (100 points = 10 Pips)
 input int    ProfitDistancePts= 10;    // دووری تراپ لە قازانجدا (10 points = 1 Pip)
 input ulong  MagicNumber      = 111222;
+
+double lastPrice = 0; // زەخیرەکردنی نرخی پێشوو
 
 //+------------------------------------------------------------------+
 int CountOpenPositions()
@@ -112,20 +114,6 @@ void ManagePendingOrder()
 }
 
 //+------------------------------------------------------------------+
-// دیاریکردنی ئاڕاستەی مۆمی پێشوو (بە بێ گوێدانە Volume)
-//+------------------------------------------------------------------+
-int GetCandleDirection()
-{
-   double open1  = iOpen(_Symbol, _Period, 1);
-   double close1 = iClose(_Symbol, _Period, 1);
-
-   if(close1 >= open1)
-      return 1;  // BUY
-   else
-      return -1; // SELL
-}
-
-//+------------------------------------------------------------------+
 // Main Logic
 //+------------------------------------------------------------------+
 void ExecuteLogic()
@@ -143,35 +131,46 @@ void ExecuteLogic()
       return;
    }
 
-   // 2. دایم بە بێ وەستان ئۆردەر دەکاتەوە
+   double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+   double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+
+   // 2. کاتێک هیچ ئۆردەرێک نییە ➔ بەپێی جوڵەی ڕاستەوخۆی نرخ (Tick Movement) ئۆردەر دەکات
    if(openPositions == 0)
    {
       CloseAndCleanAll();
 
-      double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
-      double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
-      int direction = GetCandleDirection();
-
-      if(direction == 1) // BUY
+      if(lastPrice == 0)
       {
-         if(trade.Buy(LotSize, _Symbol, ask, 0, 0, "Always Buy"))
+         lastPrice = bid;
+         return;
+      }
+
+      // ئەگەر نرخ ڕووی لە بەرزبوونەوە بوو ➔ BUY
+      if(bid >= lastPrice)
+      {
+         if(trade.Buy(LotSize, _Symbol, ask, 0, 0, "Tick Buy"))
          {
             double sellPrice = NormalizeDouble(bid - (FixedStopPts * _Point), _Digits);
             trade.SellStop(LotSize, sellPrice, _Symbol, 0, 0, ORDER_TIME_GTC, 0, "Protection SellStop");
          }
       }
-      else if(direction == -1) // SELL
+      // ئەگەر نرخ ڕووی لە داپۆشین بوو ➔ SELL
+      else
       {
-         if(trade.Sell(LotSize, _Symbol, bid, 0, 0, "Always Sell"))
+         if(trade.Sell(LotSize, _Symbol, bid, 0, 0, "Tick Sell"))
          {
             double buyPrice = NormalizeDouble(ask + (FixedStopPts * _Point), _Digits);
             trade.BuyStop(LotSize, buyPrice, _Symbol, 0, 0, ORDER_TIME_GTC, 0, "Protection BuyStop");
          }
       }
+
+      lastPrice = bid;
    }
-   // 3. کاتێک ١ پۆزیشن کراوەیە ➔ بەڕێوەبردنی تراپ و Trailing
+   // 3. کاتێک ١ پۆزیشن کراوەیە ➔ بەڕێوەبردنی تراپەکە
    else if(openPositions == 1)
    {
+      lastPrice = bid;
+
       if(pendingOrders == 0)
       {
          for(int i = PositionsTotal() - 1; i >= 0; i--)
@@ -180,8 +179,6 @@ void ExecuteLogic()
             if(ticket > 0 && PositionGetString(POSITION_SYMBOL) == _Symbol && (ulong)PositionGetInteger(POSITION_MAGIC) == MagicNumber)
             {
                long type = PositionGetInteger(POSITION_TYPE);
-               double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
-               double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
 
                if(type == POSITION_TYPE_BUY)
                {
@@ -208,6 +205,7 @@ void ExecuteLogic()
 int OnInit()
 {
    trade.SetExpertMagicNumber(MagicNumber);
+   lastPrice = 0;
    return(INIT_SUCCEEDED);
 }
 
