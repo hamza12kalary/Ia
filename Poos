@@ -202,4 +202,27 @@ void ExecuteLogic()
                   double buyPrice = NormalizeDouble(ask + (FixedStopPts * _Point), _Digits);
                   trade.BuyStop(LotSize, buyPrice, _Symbol, 0, 0, ORDER_TIME_GTC, 0, "Protection BuyStop");
                }
+               break;
+            }
+         }
+      }
+      else
+      {
+         ManagePendingOrder(); // بەڕێوەبردنی تراپەکە
+      }
+   }
+}
 
+//+------------------------------------------------------------------+
+int OnInit()
+{
+   trade.SetExpertMagicNumber(MagicNumber);
+   return(INIT_SUCCEEDED);
+}
+
+//+------------------------------------------------------------------+
+void OnTick()
+{
+   ExecuteLogic();
+}
+//+------------------------------------------------------------------+
