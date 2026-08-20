@@ -1,179 +1,770 @@
 //+------------------------------------------------------------------+
-//| Exact_TikTok_Trailing_Hedge_EA.mq5                               |
+//| XAUUSD_PendingTrailing_V4.mq5                                   |
+//| Pending-order trailing breakout EA for XAUUSD                   |
 //+------------------------------------------------------------------+
 #property strict
 
 #include <Trade/Trade.mqh>
 CTrade trade;
 
-//==================== INPUT SETTINGS ===============================
+//==================== BASIC ========================================
+input double LotSize = 0.01;
+input ulong  MagicNumber = 20260820;
 
-input double LotSize        = 0.01;  // لۆت
-input int    DistancePoints = 10;    // دووری ئۆردەرەکە (10 points = 1 Pip)
-input ulong  MagicNumber    = 111222;
+// Distance of pending orders from current market
+input int PendingDistancePoints = 100;
 
-//+------------------------------------------------------------------+
-int CountOpenPositions()
+// Pending orders move with price by this step
+input int PendingTrailStepPoints = 20;
+
+// Stop / Target after activation
+input int StopLossPoints = 100;
+input int TakeProfitPoints = 300;
+
+//==================== VOLUME =======================================
+input bool UseVolumeFilter = true;
+input int VolumePeriod = 20;
+input double VolumeMultiplier = 1.50;
+
+//==================== BREAKOUT =====================================
+input bool UseBreakoutFilter = true;
+input int BreakoutLookback = 10;
+
+//==================== SPREAD =======================================
+input bool UseSpreadFilter = true;
+input int MaxSpreadPoints = 80;
+
+//==================== POSITION TRAILING ============================
+input bool UseBreakEven = true;
+input int BreakEvenTriggerPoints = 100;
+input int BreakEvenPlusPoints = 10;
+
+input bool UsePositionTrailing = true;
+input int PositionTrailingStartPoints = 150;
+input int PositionTrailingStopPoints = 100;
+
+//===================================================================
+bool IsOurPending()
 {
-   int count = 0;
+   if(OrderGetString(ORDER_SYMBOL) != _Symbol)
+      return false;
+
+   if((ulong)OrderGetInteger(ORDER_MAGIC) != MagicNumber)
+      return false;
+
+   ENUM_ORDER_TYPE type =
+      (ENUM_ORDER_TYPE)OrderGetInteger(ORDER_TYPE);
+
+   return(type == ORDER_TYPE_BUY_STOP ||
+          type == ORDER_TYPE_SELL_STOP);
+}
+
+//===================================================================
+bool IsOurPosition()
+{
+   return(PositionGetString(POSITION_SYMBOL) == _Symbol &&
+          (ulong)PositionGetInteger(POSITION_MAGIC) == MagicNumber);
+}
+
+//===================================================================
+int CountPositions()
+{
+   int n = 0;
+
    for(int i = PositionsTotal() - 1; i >= 0; i--)
    {
       ulong ticket = PositionGetTicket(i);
-      if(ticket > 0 && PositionGetString(POSITION_SYMBOL) == _Symbol && (ulong)PositionGetInteger(POSITION_MAGIC) == MagicNumber)
-         count++;
+
+      if(ticket > 0 && IsOurPosition())
+         n++;
    }
-   return count;
+
+   return n;
 }
 
-int CountPendingOrders()
+//===================================================================
+int CountPending()
 {
-   int count = 0;
+   int n = 0;
+
    for(int i = OrdersTotal() - 1; i >= 0; i--)
    {
       ulong ticket = OrderGetTicket(i);
-      if(ticket > 0 && OrderGetString(ORDER_SYMBOL) == _Symbol && (ulong)OrderGetInteger(ORDER_MAGIC) == MagicNumber)
-         count++;
+
+      if(ticket > 0 && IsOurPending())
+         n++;
    }
-   return count;
+
+   return n;
 }
 
-void DeleteAllPending()
+//===================================================================
+void DeletePending()
 {
    for(int i = OrdersTotal() - 1; i >= 0; i--)
    {
       ulong ticket = OrderGetTicket(i);
-      if(ticket > 0 && OrderGetString(ORDER_SYMBOL) == _Symbol && (ulong)OrderGetInteger(ORDER_MAGIC) == MagicNumber)
+
+      if(ticket > 0 && IsOurPending())
       {
-         trade.OrderDelete(ticket);
+         if(!trade.OrderDelete(ticket))
+         {
+            Print("Pending delete failed: ",
+                  trade.ResultRetcodeDescription());
+         }
       }
    }
 }
 
-void CloseAllPositions()
+//===================================================================
+bool SpreadOK()
 {
-   for(int i = PositionsTotal() - 1; i >= 0; i--)
-   {
-      ulong ticket = PositionGetTicket(i);
-      if(ticket > 0 && PositionGetString(POSITION_SYMBOL) == _Symbol && (ulong)PositionGetInteger(POSITION_MAGIC) == MagicNumber)
-      {
-         trade.PositionClose(ticket);
-      }
-   }
-}
+   if(!UseSpreadFilter)
+      return true;
 
-//+------------------------------------------------------------------+
-// جوڵاندنی ئۆردەری هەڵپەسێردراو بەدوای نرخدا (Trailing Pending Order)
-//+------------------------------------------------------------------+
-void UpdatePendingDistance()
-{
    double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
    double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
 
+   return ((ask - bid) / _Point <= MaxSpreadPoints);
+}
+
+//===================================================================
+double AverageVolume()
+{
+   long v[];
+
+   ArraySetAsSeries(v, true);
+
+   int copied = CopyTickVolume(
+      _Symbol,
+      PERIOD_CURRENT,
+      1,
+      VolumePeriod,
+      v
+   );
+
+   if(copied <= 0)
+      return 0;
+
+   double sum = 0;
+
+   for(int i = 0; i < copied; i++)
+      sum += (double)v[i];
+
+   return sum / copied;
+}
+
+//===================================================================
+bool VolumeOK()
+{
+   if(!UseVolumeFilter)
+      return true;
+
+   long current =
+      iVolume(
+         _Symbol,
+         PERIOD_CURRENT,
+         0
+      );
+
+   double avg = AverageVolume();
+
+   if(avg <= 0)
+      return false;
+
+   return(
+      (double)current >=
+      avg * VolumeMultiplier
+   );
+}
+
+//===================================================================
+double HighestHigh()
+{
+   double highest = -DBL_MAX;
+
+   for(int i = 1; i <= BreakoutLookback; i++)
+   {
+      double h =
+         iHigh(
+            _Symbol,
+            PERIOD_CURRENT,
+            i
+         );
+
+      if(h > highest)
+         highest = h;
+   }
+
+   return highest;
+}
+
+//===================================================================
+double LowestLow()
+{
+   double lowest = DBL_MAX;
+
+   for(int i = 1; i <= BreakoutLookback; i++)
+   {
+      double l =
+         iLow(
+            _Symbol,
+            PERIOD_CURRENT,
+            i
+         );
+
+      if(l < lowest)
+         lowest = l;
+   }
+
+   return lowest;
+}
+
+//===================================================================
+void CreateInitialPending()
+{
+   if(!SpreadOK())
+      return;
+
+   if(!VolumeOK())
+      return;
+
+   double ask =
+      SymbolInfoDouble(
+         _Symbol,
+         SYMBOL_ASK
+      );
+
+   double bid =
+      SymbolInfoDouble(
+         _Symbol,
+         SYMBOL_BID
+      );
+
+   double high = HighestHigh();
+   double low  = LowestLow();
+
+   trade.SetExpertMagicNumber(MagicNumber);
+   trade.SetDeviationInPoints(50);
+   trade.SetTypeFillingBySymbol(_Symbol);
+
+   //===============================================================
+   // BUY STOP
+   //===============================================================
+
+   double buyEntry =
+      MathMax(
+         ask + PendingDistancePoints * _Point,
+         high + PendingDistancePoints * _Point
+      );
+
+   double buySL =
+      buyEntry - StopLossPoints * _Point;
+
+   double buyTP =
+      buyEntry + TakeProfitPoints * _Point;
+
+   buyEntry =
+      NormalizeDouble(
+         buyEntry,
+         _Digits
+      );
+
+   buySL =
+      NormalizeDouble(
+         buySL,
+         _Digits
+      );
+
+   buyTP =
+      NormalizeDouble(
+         buyTP,
+         _Digits
+      );
+
+   if(!trade.BuyStop(
+      LotSize,
+      buyEntry,
+      _Symbol,
+      buySL,
+      buyTP,
+      ORDER_TIME_GTC,
+      0,
+      "Pending Trail BUY"
+   ))
+   {
+      Print(
+         "BUY STOP failed: ",
+         trade.ResultRetcodeDescription()
+      );
+   }
+   else
+   {
+      Print(
+         "BUY STOP placed: ",
+         buyEntry
+      );
+   }
+
+   //===============================================================
+   // SELL STOP
+   //===============================================================
+
+   double sellEntry =
+      MathMin(
+         bid - PendingDistancePoints * _Point,
+         low - PendingDistancePoints * _Point
+      );
+
+   double sellSL =
+      sellEntry + StopLossPoints * _Point;
+
+   double sellTP =
+      sellEntry - TakeProfitPoints * _Point;
+
+   sellEntry =
+      NormalizeDouble(
+         sellEntry,
+         _Digits
+      );
+
+   sellSL =
+      NormalizeDouble(
+         sellSL,
+         _Digits
+      );
+
+   sellTP =
+      NormalizeDouble(
+         sellTP,
+         _Digits
+      );
+
+   if(!trade.SellStop(
+      LotSize,
+      sellEntry,
+      _Symbol,
+      sellSL,
+      sellTP,
+      ORDER_TIME_GTC,
+      0,
+      "Pending Trail SELL"
+   ))
+   {
+      Print(
+         "SELL STOP failed: ",
+         trade.ResultRetcodeDescription()
+      );
+   }
+   else
+   {
+      Print(
+         "SELL STOP placed: ",
+         sellEntry
+      );
+   }
+}
+
+//===================================================================
+// Move pending orders with market
+//
+// BUY STOP  -> follows ASK upward
+// SELL STOP -> follows BID downward
+//===================================================================
+void TrailPendingOrders()
+{
+   if(CountPositions() > 0)
+      return;
+
+   double ask =
+      SymbolInfoDouble(
+         _Symbol,
+         SYMBOL_ASK
+      );
+
+   double bid =
+      SymbolInfoDouble(
+         _Symbol,
+         SYMBOL_BID
+      );
+
+   double minStop =
+      (double)SymbolInfoInteger(
+         _Symbol,
+         SYMBOL_TRADE_STOPS_LEVEL
+      ) * _Point;
+
    for(int i = OrdersTotal() - 1; i >= 0; i--)
    {
-      ulong ticket = OrderGetTicket(i);
-      if(ticket > 0 && OrderGetString(ORDER_SYMBOL) == _Symbol && (ulong)OrderGetInteger(ORDER_MAGIC) == MagicNumber)
-      {
-         long type         = OrderGetInteger(ORDER_TYPE);
-         double openPrice = OrderGetDouble(ORDER_PRICE_OPEN);
+      ulong ticket =
+         OrderGetTicket(i);
 
-         if(type == ORDER_TYPE_SELL_STOP)
+      if(ticket == 0 || !IsOurPending())
+         continue;
+
+      ENUM_ORDER_TYPE type =
+         (ENUM_ORDER_TYPE)
+         OrderGetInteger(
+            ORDER_TYPE
+         );
+
+      double oldPrice =
+         OrderGetDouble(
+            ORDER_PRICE_OPEN
+         );
+
+      double sl =
+         OrderGetDouble(
+            ORDER_SL
+         );
+
+      double tp =
+         OrderGetDouble(
+            ORDER_TP
+         );
+
+      datetime expiration =
+         (datetime)OrderGetInteger(
+            ORDER_TIME_EXPIRATION
+         );
+
+      //============================================================
+      // BUY STOP TRAILING
+      //============================================================
+      if(type == ORDER_TYPE_BUY_STOP)
+      {
+         double wanted =
+            ask +
+            PendingDistancePoints * _Point;
+
+         wanted =
+            MathMax(
+               wanted,
+               ask + minStop + _Point
+            );
+
+         wanted =
+            NormalizeDouble(
+               wanted,
+               _Digits
+            );
+
+         // Only move BUY STOP upward
+         if(
+            wanted - oldPrice >=
+            PendingTrailStepPoints * _Point
+         )
          {
-            double targetPrice = NormalizeDouble(bid - (DistancePoints * _Point), _Digits);
-            if(MathAbs(targetPrice - openPrice) >= _Point)
+            double newSL =
+               NormalizeDouble(
+                  wanted -
+                  StopLossPoints * _Point,
+                  _Digits
+               );
+
+            double newTP =
+               NormalizeDouble(
+                  wanted +
+                  TakeProfitPoints * _Point,
+                  _Digits
+               );
+
+            if(!trade.OrderModify(
+               ticket,
+               wanted,
+               newSL,
+               newTP,
+               ORDER_TIME_GTC,
+               expiration,
+               0
+            ))
             {
-               trade.OrderModify(ticket, targetPrice, 0, 0, ORDER_TIME_GTC, 0);
+               Print(
+                  "BUY pending trail failed: ",
+                  trade.ResultRetcodeDescription()
+               );
             }
          }
-         else if(type == ORDER_TYPE_BUY_STOP)
+      }
+
+      //============================================================
+      // SELL STOP TRAILING
+      //============================================================
+      if(type == ORDER_TYPE_SELL_STOP)
+      {
+         double wanted =
+            bid -
+            PendingDistancePoints * _Point;
+
+         wanted =
+            MathMin(
+               wanted,
+               bid - minStop - _Point
+            );
+
+         wanted =
+            NormalizeDouble(
+               wanted,
+               _Digits
+            );
+
+         // Only move SELL STOP downward
+         if(
+            oldPrice - wanted >=
+            PendingTrailStepPoints * _Point
+         )
          {
-            double targetPrice = NormalizeDouble(ask + (DistancePoints * _Point), _Digits);
-            if(MathAbs(targetPrice - openPrice) >= _Point)
+            double newSL =
+               NormalizeDouble(
+                  wanted +
+                  StopLossPoints * _Point,
+                  _Digits
+               );
+
+            double newTP =
+               NormalizeDouble(
+                  wanted -
+                  TakeProfitPoints * _Point,
+                  _Digits
+               );
+
+            if(!trade.OrderModify(
+               ticket,
+               wanted,
+               newSL,
+               newTP,
+               ORDER_TIME_GTC,
+               expiration,
+               0
+            ))
             {
-               trade.OrderModify(ticket, targetPrice, 0, 0, ORDER_TIME_GTC, 0);
+               Print(
+                  "SELL pending trail failed: ",
+                  trade.ResultRetcodeDescription()
+               );
             }
          }
       }
    }
 }
 
-//+------------------------------------------------------------------+
-// Main EA Logic
-//+------------------------------------------------------------------+
-void ExecuteLogic()
+//===================================================================
+// Position management
+//===================================================================
+void ManagePosition()
 {
-   trade.SetExpertMagicNumber(MagicNumber);
-   trade.SetDeviationInPoints(20);
-
-   int openPositions = CountOpenPositions();
-   int pendingOrders = CountPendingOrders();
-
-   // 1. کاتێک ئۆردەری هەڵپەسێردراو چالاک بوو و بووە ۲ پۆزیشن ➔ ڕاستەوخۆ بەیەکەوە دایانبخە
-   if(openPositions >= 2)
+   for(int i = PositionsTotal() - 1; i >= 0; i--)
    {
-      CloseAllPositions();
-      DeleteAllPending();
+      ulong ticket =
+         PositionGetTicket(i);
+
+      if(ticket == 0 || !IsOurPosition())
+         continue;
+
+      long type =
+         PositionGetInteger(
+            POSITION_TYPE
+         );
+
+      double open =
+         PositionGetDouble(
+            POSITION_PRICE_OPEN
+         );
+
+      double sl =
+         PositionGetDouble(
+            POSITION_SL
+         );
+
+      double tp =
+         PositionGetDouble(
+            POSITION_TP
+         );
+
+      //============================================================
+      // BUY
+      //============================================================
+      if(type == POSITION_TYPE_BUY)
+      {
+         double bid =
+            SymbolInfoDouble(
+               _Symbol,
+               SYMBOL_BID
+            );
+
+         double profit =
+            (bid - open) / _Point;
+
+         // Break-even
+         if(
+            UseBreakEven &&
+            profit >= BreakEvenTriggerPoints
+         )
+         {
+            double be =
+               NormalizeDouble(
+                  open +
+                  BreakEvenPlusPoints * _Point,
+                  _Digits
+               );
+
+            if(sl == 0 || be > sl)
+            {
+               trade.PositionModify(
+                  ticket,
+                  be,
+                  tp
+               );
+            }
+         }
+
+         // Position trailing
+         if(
+            UsePositionTrailing &&
+            profit >= PositionTrailingStartPoints
+         )
+         {
+            double newSL =
+               NormalizeDouble(
+                  bid -
+                  PositionTrailingStopPoints * _Point,
+                  _Digits
+               );
+
+            if(sl == 0 || newSL > sl)
+            {
+               trade.PositionModify(
+                  ticket,
+                  newSL,
+                  tp
+               );
+            }
+         }
+      }
+
+      //============================================================
+      // SELL
+      //============================================================
+      if(type == POSITION_TYPE_SELL)
+      {
+         double ask =
+            SymbolInfoDouble(
+               _Symbol,
+               SYMBOL_ASK
+            );
+
+         double profit =
+            (open - ask) / _Point;
+
+         // Break-even
+         if(
+            UseBreakEven &&
+            profit >= BreakEvenTriggerPoints
+         )
+         {
+            double be =
+               NormalizeDouble(
+                  open -
+                  BreakEvenPlusPoints * _Point,
+                  _Digits
+               );
+
+            if(sl == 0 || be < sl)
+            {
+               trade.PositionModify(
+                  ticket,
+                  be,
+                  tp
+               );
+            }
+         }
+
+         // Position trailing
+         if(
+            UsePositionTrailing &&
+            profit >= PositionTrailingStartPoints
+         )
+         {
+            double newSL =
+               NormalizeDouble(
+                  ask +
+                  PositionTrailingStopPoints * _Point,
+                  _Digits
+               );
+
+            if(sl == 0 || newSL < sl)
+            {
+               trade.PositionModify(
+                  ticket,
+                  newSL,
+                  tp
+               );
+            }
+         }
+      }
+   }
+}
+
+//===================================================================
+// INIT
+//===================================================================
+int OnInit()
+{
+   trade.SetExpertMagicNumber(
+      MagicNumber
+   );
+
+   trade.SetDeviationInPoints(50);
+
+   trade.SetTypeFillingBySymbol(
+      _Symbol
+   );
+
+   Print(
+      "XAUUSD PENDING TRAILING V4 STARTED"
+   );
+
+   return INIT_SUCCEEDED;
+}
+
+//===================================================================
+// MAIN
+//===================================================================
+void OnTick()
+{
+   // Manage active position
+   ManagePosition();
+
+   int positions =
+      CountPositions();
+
+   int pending =
+      CountPending();
+
+   //===============================================================
+   // One pending triggered -> delete the other
+   //===============================================================
+   if(positions > 0)
+   {
+      if(pending > 0)
+         DeletePending();
+
       return;
    }
 
-   // 2. کاتێک هیچ پۆزیشنێک کراوە نییە ➔ BUY بکە و SELL STOP بە ١ پیپ بخەرە دوای
-   if(openPositions == 0 && pendingOrders == 0)
+   //===============================================================
+   // No position -> trail existing pending orders
+   //===============================================================
+   if(pending > 0)
    {
-      double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
-      double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
-
-      if(trade.Buy(LotSize, _Symbol, ask, 0, 0, "Initial Buy"))
-      {
-         double sellPrice = NormalizeDouble(bid - (DistancePoints * _Point), _Digits);
-         trade.SellStop(LotSize, sellPrice, _Symbol, 0, 0, ORDER_TIME_GTC, 0, "Protection SellStop");
-      }
+      TrailPendingOrders();
+      return;
    }
-   // 3. کاتێک ۱ پۆزیشن کراوەیە ➔ ئۆردەرە هەڵپەسێردراوەکە بەدوای نرخەکەدا بە دووری ١ پیپ بگوێزەرەوە
-   else if(openPositions == 1)
-   {
-      if(pendingOrders == 0)
-      {
-         for(int i = PositionsTotal() - 1; i >= 0; i--)
-         {
-            ulong ticket = PositionGetTicket(i);
-            if(ticket > 0 && PositionGetString(POSITION_SYMBOL) == _Symbol && (ulong)PositionGetInteger(POSITION_MAGIC) == MagicNumber)
-            {
-               long type = PositionGetInteger(POSITION_TYPE);
-               double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
-               double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
 
-               if(type == POSITION_TYPE_BUY)
-               {
-                  double sellPrice = NormalizeDouble(bid - (DistancePoints * _Point), _Digits);
-                  trade.SellStop(LotSize, sellPrice, _Symbol, 0, 0, ORDER_TIME_GTC, 0, "Protection SellStop");
-               }
-               else if(type == POSITION_TYPE_SELL)
-               {
-                  double buyPrice = NormalizeDouble(ask + (DistancePoints * _Point), _Digits);
-                  trade.BuyStop(LotSize, buyPrice, _Symbol, 0, 0, ORDER_TIME_GTC, 0, "Protection BuyStop");
-               }
-               break;
-            }
-         }
-      }
-      else
-      {
-         UpdatePendingDistance(); // جوڵاندنی ئۆردەرەکە بە بەردەوامی
-      }
-   }
+   //===============================================================
+   // Nothing exists -> create BUY STOP + SELL STOP
+   //===============================================================
+   CreateInitialPending();
 }
 
 //+------------------------------------------------------------------+
-int OnInit()
-{
-   trade.SetExpertMagicNumber(MagicNumber);
-   return(INIT_SUCCEEDED);
-}
-
-//+------------------------------------------------------------------+
-void OnTick()
-{
-   ExecuteLogic();
-}
-//+------------------------------------------------------------------+
-
