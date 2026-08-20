@@ -1,5 +1,5 @@
 //+------------------------------------------------------------------+
-//| TikTok_Immediate_Tick_EA.mq5                                     |
+//| TikTok_Pure_Pending_EA.mq5                                       |
 //+------------------------------------------------------------------+
 #property strict
 
@@ -12,8 +12,6 @@ input double LotSize          = 0.01;  // لۆت
 input int    FixedStopPts     = 100;   // دووری ستۆپی جێگیر لە زەرەردا (100 points = 10 Pips)
 input int    ProfitDistancePts= 10;    // دووری تراپ لە قازانجدا (10 points = 1 Pip)
 input ulong  MagicNumber      = 111222;
-
-double lastPrice = 0; // زەخیرەکردنی نرخی پێشوو
 
 //+------------------------------------------------------------------+
 int CountOpenPositions()
@@ -75,11 +73,13 @@ double GetCurrentPositionProfit()
 }
 
 //+------------------------------------------------------------------+
+// بەڕێوەبردنی ئۆردەری هەڵپەسێردراو
+//+------------------------------------------------------------------+
 void ManagePendingOrder()
 {
    double profit = GetCurrentPositionProfit();
 
-   // کاتێک لە زەرەردایە ➔ ستۆپەکە لە ١٠ پیپەکەدا نەگۆڕە
+   // کاتێک لە زەرەردایە ➔ ستۆپەکە لە ١٠ پیپەکەدا نەگۆڕە و ناجوڵێت
    if(profit <= 0) return;
 
    double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
@@ -93,6 +93,7 @@ void ManagePendingOrder()
          long type         = OrderGetInteger(ORDER_TYPE);
          double openPrice = OrderGetDouble(ORDER_PRICE_OPEN);
 
+         // کاتێک لە قازانجدایە ➔ پێندینگەکە دێنێتە ۱ پیپی پشتی نرخ
          if(type == ORDER_TYPE_SELL_STOP)
          {
             double targetPrice = NormalizeDouble(bid - (ProfitDistancePts * _Point), _Digits);
@@ -124,7 +125,7 @@ void ExecuteLogic()
    int openPositions = CountOpenPositions();
    int pendingOrders = CountPendingOrders();
 
-   // 1. کاتێک نرخەکە لە Pending Orderی دا (بوو بە 2 پۆزیشن) ➔ ڕاستەوخۆ هەردووکیان دابخە
+   // 1. کاتێک نرخەکە لە پێندینگەکە دەدات (دەبێتە 2 پۆزیشن) ➔ یەکسەر هەردووی دادەخات
    if(openPositions >= 2)
    {
       CloseAndCleanAll();
@@ -134,43 +135,20 @@ void ExecuteLogic()
    double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
    double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
 
-   // 2. کاتێک هیچ ئۆردەرێک نییە ➔ بەپێی جوڵەی ڕاستەوخۆی نرخ (Tick Movement) ئۆردەر دەکات
+   // 2. کاتێک هیچ ئۆردەرێک نییە ➔ یەکسەر BUY دەکرێتەوە و SELL STOP لە ١٠ پیپ دەبەسترێت
    if(openPositions == 0)
    {
       CloseAndCleanAll();
 
-      if(lastPrice == 0)
+      if(trade.Buy(LotSize, _Symbol, ask, 0, 0, "Pure Pending Buy"))
       {
-         lastPrice = bid;
-         return;
+         double sellPrice = NormalizeDouble(bid - (FixedStopPts * _Point), _Digits);
+         trade.SellStop(LotSize, sellPrice, _Symbol, 0, 0, ORDER_TIME_GTC, 0, "Protection SellStop");
       }
-
-      // ئەگەر نرخ ڕووی لە بەرزبوونەوە بوو ➔ BUY
-      if(bid >= lastPrice)
-      {
-         if(trade.Buy(LotSize, _Symbol, ask, 0, 0, "Tick Buy"))
-         {
-            double sellPrice = NormalizeDouble(bid - (FixedStopPts * _Point), _Digits);
-            trade.SellStop(LotSize, sellPrice, _Symbol, 0, 0, ORDER_TIME_GTC, 0, "Protection SellStop");
-         }
-      }
-      // ئەگەر نرخ ڕووی لە داپۆشین بوو ➔ SELL
-      else
-      {
-         if(trade.Sell(LotSize, _Symbol, bid, 0, 0, "Tick Sell"))
-         {
-            double buyPrice = NormalizeDouble(ask + (FixedStopPts * _Point), _Digits);
-            trade.BuyStop(LotSize, buyPrice, _Symbol, 0, 0, ORDER_TIME_GTC, 0, "Protection BuyStop");
-         }
-      }
-
-      lastPrice = bid;
    }
-   // 3. کاتێک ١ پۆزیشن کراوەیە ➔ بەڕێوەبردنی تراپەکە
+   // 3. کاتێک ١ پۆزیشن کراوەیە ➔ بەڕێوەبردنی پێندینگەکە
    else if(openPositions == 1)
    {
-      lastPrice = bid;
-
       if(pendingOrders == 0)
       {
          for(int i = PositionsTotal() - 1; i >= 0; i--)
@@ -196,7 +174,7 @@ void ExecuteLogic()
       }
       else
       {
-         ManagePendingOrder();
+         ManagePendingOrder(); // تەنها لە قازانجدا بەدوایدا دەڕوات
       }
    }
 }
@@ -205,7 +183,6 @@ void ExecuteLogic()
 int OnInit()
 {
    trade.SetExpertMagicNumber(MagicNumber);
-   lastPrice = 0;
    return(INIT_SUCCEEDED);
 }
 
