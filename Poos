@@ -1,5 +1,6 @@
 //+------------------------------------------------------------------+
-//|              XAUUSD_VolumeBreakout_REFRESH.mq5                  |
+//| XAUUSD_Pullback_Confirmation_EA.mq5                              |
+//| MT5 Expert Advisor                                               |
 //+------------------------------------------------------------------+
 #property strict
 
@@ -7,740 +8,565 @@
 
 CTrade trade;
 
-//==================== SETTINGS =====================================
+//========================= INPUTS ===================================
 
-input double LotSize          = 0.01;
+input string TradeSymbol = "XAUUSD";
 
-input int DistancePoints      = 100;
+input ENUM_TIMEFRAMES EntryTF = PERIOD_M1;
+input ENUM_TIMEFRAMES ConfirmTF = PERIOD_M5;
 
-input int StopLossPoints      = 100;
-input int TakeProfitPoints    = 300;
+input double RiskPercent = 1.0;
+input double RiskReward  = 2.0;
 
-input bool UseTrailingStop    = true;
-input int TrailingStopPoints  = 100;
+input int LookbackBars = 30;
 
-//==================== VOLUME FILTER ================================
+// Pullback zone
+input double ZonePercent = 0.382;
 
-input bool   UseVolumeFilter  = true;
-input int    VolumePeriod     = 20;
-input double VolumeMultiplier = 1.50;
+// Confirmation
+input bool UseEngulfing       = true;
+input bool UseBreakOfStructure = true;
 
-//==================== BREAKOUT FILTER ==============================
+// Trend
+input int FastEMA = 20;
+input int SlowEMA = 50;
 
-input bool UseBreakoutFilter  = true;
-input int  BreakoutLookback   = 10;
+// ATR
+input int ATRPeriod = 14;
+input double ATR_SL_Multiplier = 1.5;
 
-//==================== SPREAD FILTER ================================
+// Spread
+input bool UseSpreadFilter = true;
+input double MaxSpreadPoints = 80;
 
-input bool UseSpreadFilter    = true;
-input int  MaxSpreadPoints    = 80;
+// Trading
+input bool AllowBuy  = true;
+input bool AllowSell = true;
 
-//==================== MAGIC ========================================
+input bool OnePositionOnly = true;
 
-input ulong MagicNumber       = 20260819;
+input ulong MagicNumber = 20260825;
 
-//+------------------------------------------------------------------+
-//| Count positions                                                  |
-//+------------------------------------------------------------------+
-int CountOpenPositions()
-{
-   int count = 0;
+//========================= GLOBALS ==================================
 
-   for(int i = PositionsTotal() - 1; i >= 0; i--)
-   {
-      ulong ticket = PositionGetTicket(i);
-      if(ticket == 0)
-         continue;
+int fastEMAHandle;
+int slowEMAHandle;
+int atrHandle;
 
-      if(PositionGetString(POSITION_SYMBOL) != _Symbol)
-         continue;
-
-      if((ulong)PositionGetInteger(POSITION_MAGIC) != MagicNumber)
-         continue;
-
-      count++;
-   }
-
-   return count;
-}
+datetime lastBarTime = 0;
 
 //+------------------------------------------------------------------+
-//| Count pending                                                    |
-//+------------------------------------------------------------------+
-int CountPendingOrders()
-{
-   int count = 0;
-
-   for(int i = OrdersTotal() - 1; i >= 0; i--)
-   {
-      ulong ticket = OrderGetTicket(i);
-      if(ticket == 0)
-         continue;
-
-      if(OrderGetString(ORDER_SYMBOL) != _Symbol)
-         continue;
-
-      if((ulong)OrderGetInteger(ORDER_MAGIC) != MagicNumber)
-         continue;
-
-      ENUM_ORDER_TYPE type =
-         (ENUM_ORDER_TYPE)OrderGetInteger(ORDER_TYPE);
-
-      if(type == ORDER_TYPE_BUY_STOP ||
-         type == ORDER_TYPE_SELL_STOP)
-      {
-         count++;
-      }
-   }
-
-   return count;
-}
-
-//+------------------------------------------------------------------+
-//| Delete ALL old pending orders                                    |
-//+------------------------------------------------------------------+
-void DeletePendingOrders()
-{
-   for(int i = OrdersTotal() - 1; i >= 0; i--)
-   {
-      ulong ticket = OrderGetTicket(i);
-      if(ticket == 0)
-         continue;
-
-      if(OrderGetString(ORDER_SYMBOL) != _Symbol)
-         continue;
-
-      if((ulong)OrderGetInteger(ORDER_MAGIC) != MagicNumber)
-         continue;
-
-      ENUM_ORDER_TYPE type =
-         (ENUM_ORDER_TYPE)OrderGetInteger(ORDER_TYPE);
-
-      if(type != ORDER_TYPE_BUY_STOP &&
-         type != ORDER_TYPE_SELL_STOP)
-      {
-         continue;
-      }
-
-      if(trade.OrderDelete(ticket))
-      {
-         Print("Old pending deleted #", ticket);
-      }
-      else
-      {
-         Print(
-            "Delete failed #",
-            ticket,
-            " | ",
-            trade.ResultRetcodeDescription()
-         );
-      }
-   }
-}
-
-//+------------------------------------------------------------------+
-//| Average volume                                                   |
-//+------------------------------------------------------------------+
-double GetAverageVolume()
-{
-   long volumes[];
-
-   ArraySetAsSeries(volumes, true);
-
-   int copied = CopyTickVolume(
-      _Symbol,
-      PERIOD_CURRENT,
-      1,
-      VolumePeriod,
-      volumes
-   );
-
-   if(copied <= 0)
-      return 0;
-
-   double sum = 0;
-
-   for(int i = 0; i < copied; i++)
-      sum += (double)volumes[i];
-
-   return sum / copied;
-}
-
-//+------------------------------------------------------------------+
-//| Volume confirmation                                              |
-//+------------------------------------------------------------------+
-bool VolumeConfirmed()
-{
-   if(!UseVolumeFilter)
-      return true;
-
-   long volumes[];
-
-   ArraySetAsSeries(volumes, true);
-
-   if(CopyTickVolume(
-      _Symbol,
-      PERIOD_CURRENT,
-      0,
-      1,
-      volumes
-   ) <= 0)
-   {
-      return false;
-   }
-
-   double currentVolume = (double)volumes[0];
-
-   double averageVolume =
-      GetAverageVolume();
-
-   if(averageVolume <= 0)
-      return false;
-
-   return(
-      currentVolume >=
-      averageVolume * VolumeMultiplier
-   );
-}
-
-//+------------------------------------------------------------------+
-//| Breakout confirmation                                            |
-//+------------------------------------------------------------------+
-bool BreakoutConfirmed()
-{
-   if(!UseBreakoutFilter)
-      return true;
-
-   double highs[];
-   double lows[];
-
-   ArraySetAsSeries(highs, true);
-   ArraySetAsSeries(lows, true);
-
-   if(CopyHigh(
-      _Symbol,
-      PERIOD_CURRENT,
-      1,
-      BreakoutLookback,
-      highs
-   ) <= 0)
-   {
-      return false;
-   }
-
-   if(CopyLow(
-      _Symbol,
-      PERIOD_CURRENT,
-      1,
-      BreakoutLookback,
-      lows
-   ) <= 0)
-   {
-      return false;
-   }
-
-   double highest = highs[0];
-   double lowest  = lows[0];
-
-   for(int i = 1; i < BreakoutLookback; i++)
-   {
-      if(highs[i] > highest)
-         highest = highs[i];
-
-      if(lows[i] < lowest)
-         lowest = lows[i];
-   }
-
-   double ask =
-      SymbolInfoDouble(
-         _Symbol,
-         SYMBOL_ASK
-      );
-
-   double bid =
-      SymbolInfoDouble(
-         _Symbol,
-         SYMBOL_BID
-      );
-
-   if(ask >= highest || bid <= lowest)
-      return true;
-
-   return false;
-}
-
-//+------------------------------------------------------------------+
-//| Spread filter                                                    |
-//+------------------------------------------------------------------+
-bool SpreadOK()
-{
-   if(!UseSpreadFilter)
-      return true;
-
-   double ask =
-      SymbolInfoDouble(
-         _Symbol,
-         SYMBOL_ASK
-      );
-
-   double bid =
-      SymbolInfoDouble(
-         _Symbol,
-         SYMBOL_BID
-      );
-
-   double spread =
-      (ask - bid) / _Point;
-
-   return(spread <= MaxSpreadPoints);
-}
-
-//+------------------------------------------------------------------+
-//| Place BUY STOP                                                   |
-//+------------------------------------------------------------------+
-bool PlaceBuyStop()
-{
-   if(!SpreadOK())
-      return false;
-
-   double ask =
-      SymbolInfoDouble(
-         _Symbol,
-         SYMBOL_ASK
-      );
-
-   double price =
-      NormalizeDouble(
-         ask + DistancePoints * _Point,
-         _Digits
-      );
-
-   double sl =
-      NormalizeDouble(
-         price - StopLossPoints * _Point,
-         _Digits
-      );
-
-   double tp =
-      NormalizeDouble(
-         price + TakeProfitPoints * _Point,
-         _Digits
-      );
-
-   trade.SetExpertMagicNumber(MagicNumber);
-   trade.SetDeviationInPoints(50);
-
-   bool result =
-      trade.BuyStop(
-         LotSize,
-         price,
-         _Symbol,
-         sl,
-         tp,
-         ORDER_TIME_GTC,
-         0,
-         "REFRESH BUY STOP"
-      );
-
-   if(result)
-   {
-      Print(
-         "NEW BUY STOP @ ",
-         DoubleToString(price, _Digits)
-      );
-   }
-   else
-   {
-      Print(
-         "BUY STOP ERROR: ",
-         trade.ResultRetcodeDescription()
-      );
-   }
-
-   return result;
-}
-
-//+------------------------------------------------------------------+
-//| Place SELL STOP                                                  |
-//+------------------------------------------------------------------+
-bool PlaceSellStop()
-{
-   if(!SpreadOK())
-      return false;
-
-   double bid =
-      SymbolInfoDouble(
-         _Symbol,
-         SYMBOL_BID
-      );
-
-   double price =
-      NormalizeDouble(
-         bid - DistancePoints * _Point,
-         _Digits
-      );
-
-   double sl =
-      NormalizeDouble(
-         price + StopLossPoints * _Point,
-         _Digits
-      );
-
-   double tp =
-      NormalizeDouble(
-         price - TakeProfitPoints * _Point,
-         _Digits
-      );
-
-   trade.SetExpertMagicNumber(MagicNumber);
-   trade.SetDeviationInPoints(50);
-
-   bool result =
-      trade.SellStop(
-         LotSize,
-         price,
-         _Symbol,
-         sl,
-         tp,
-         ORDER_TIME_GTC,
-         0,
-         "REFRESH SELL STOP"
-      );
-
-   if(result)
-   {
-      Print(
-         "NEW SELL STOP @ ",
-         DoubleToString(price, _Digits)
-      );
-   }
-   else
-   {
-      Print(
-         "SELL STOP ERROR: ",
-         trade.ResultRetcodeDescription()
-      );
-   }
-
-   return result;
-}
-
-//+------------------------------------------------------------------+
-//| Place NEW pair                                                   |
-//+------------------------------------------------------------------+
-void PlaceNewPair()
-{
-   // First delete ALL old pending orders
-   DeletePendingOrders();
-
-   // Then create fresh pair
-   PlaceBuyStop();
-   PlaceSellStop();
-}
-
-//+------------------------------------------------------------------+
-//| Trailing stop                                                    |
-//+------------------------------------------------------------------+
-void ApplyTrailingStop()
-{
-   if(!UseTrailingStop)
-      return;
-
-   for(int i = PositionsTotal() - 1; i >= 0; i--)
-   {
-      ulong ticket =
-         PositionGetTicket(i);
-
-      if(ticket == 0)
-         continue;
-
-      if(
-         PositionGetString(POSITION_SYMBOL)
-         != _Symbol
-      )
-         continue;
-
-      if(
-         (ulong)PositionGetInteger(
-            POSITION_MAGIC
-         ) != MagicNumber
-      )
-         continue;
-
-      long type =
-         PositionGetInteger(
-            POSITION_TYPE
-         );
-
-      double currentSL =
-         PositionGetDouble(
-            POSITION_SL
-         );
-
-      double currentTP =
-         PositionGetDouble(
-            POSITION_TP
-         );
-
-      double openPrice =
-         PositionGetDouble(
-            POSITION_PRICE_OPEN
-         );
-
-      // BUY
-      if(type == POSITION_TYPE_BUY)
-      {
-         double bid =
-            SymbolInfoDouble(
-               _Symbol,
-               SYMBOL_BID
-            );
-
-         if(
-            bid - openPrice >
-            TrailingStopPoints * _Point
-         )
-         {
-            double newSL =
-               NormalizeDouble(
-                  bid -
-                  TrailingStopPoints * _Point,
-                  _Digits
-               );
-
-            if(
-               currentSL == 0 ||
-               newSL > currentSL
-            )
-            {
-               trade.PositionModify(
-                  ticket,
-                  newSL,
-                  currentTP
-               );
-            }
-         }
-      }
-
-      // SELL
-      if(type == POSITION_TYPE_SELL)
-      {
-         double ask =
-            SymbolInfoDouble(
-               _Symbol,
-               SYMBOL_ASK
-            );
-
-         if(
-            openPrice - ask >
-            TrailingStopPoints * _Point
-         )
-         {
-            double newSL =
-               NormalizeDouble(
-                  ask +
-                  TrailingStopPoints * _Point,
-                  _Digits
-               );
-
-            if(
-               currentSL == 0 ||
-               newSL < currentSL
-            )
-            {
-               trade.PositionModify(
-                  ticket,
-                  newSL,
-                  currentTP
-               );
-            }
-         }
-      }
-   }
-}
-
-//+------------------------------------------------------------------+
-//| INITIALIZATION                                                   |
+//| Expert initialization                                            |
 //+------------------------------------------------------------------+
 int OnInit()
 {
    trade.SetExpertMagicNumber(MagicNumber);
-   trade.SetDeviationInPoints(50);
+   trade.SetDeviationInPoints(30);
 
-   Print(
-      "========================================"
+   fastEMAHandle = iMA(
+      TradeSymbol,
+      EntryTF,
+      FastEMA,
+      0,
+      MODE_EMA,
+      PRICE_CLOSE
    );
 
-   Print(
-      "XAUUSD VOLUME BREAKOUT REFRESH EA"
+   slowEMAHandle = iMA(
+      TradeSymbol,
+      EntryTF,
+      SlowEMA,
+      0,
+      MODE_EMA,
+      PRICE_CLOSE
    );
 
-   Print(
-      "BUY STOP + SELL STOP"
+   atrHandle = iATR(
+      TradeSymbol,
+      EntryTF,
+      ATRPeriod
    );
 
-   Print(
-      "Every activation:"
-   );
+   if(fastEMAHandle == INVALID_HANDLE ||
+      slowEMAHandle == INVALID_HANDLE ||
+      atrHandle == INVALID_HANDLE)
+   {
+      Print("Indicator initialization failed.");
+      return INIT_FAILED;
+   }
 
-   Print(
-      "DELETE OLD PENDING -> CREATE NEW PAIR"
-   );
+   Print("======================================");
+   Print(" XAUUSD PULLBACK EA STARTED");
+   Print(" TF: ", EnumToString(EntryTF));
+   Print(" Risk: ", RiskPercent, "%");
+   Print(" RR: 1:", RiskReward);
+   Print("======================================");
 
-   Print(
-      "========================================"
-   );
-
-   return(INIT_SUCCEEDED);
+   return INIT_SUCCEEDED;
 }
 
 //+------------------------------------------------------------------+
-//| MAIN                                                             |
+//| Expert deinitialization                                          |
+//+------------------------------------------------------------------+
+void OnDeinit(const int reason)
+{
+   IndicatorRelease(fastEMAHandle);
+   IndicatorRelease(slowEMAHandle);
+   IndicatorRelease(atrHandle);
+}
+
+//+------------------------------------------------------------------+
+//| Expert tick                                                      |
 //+------------------------------------------------------------------+
 void OnTick()
 {
-   ApplyTrailingStop();
+   if(!SymbolSelect(TradeSymbol, true))
+      return;
 
-   //===============================================================
-   // If absolutely nothing exists, wait for initial confirmation
-   //===============================================================
+   // Only process new candle
+   datetime currentBar =
+      iTime(TradeSymbol, EntryTF, 0);
 
-   int positions =
-      CountOpenPositions();
+   if(currentBar == lastBarTime)
+      return;
 
-   int pending =
-      CountPendingOrders();
+   lastBarTime = currentBar;
 
-   if(
-      positions == 0 &&
-      pending == 0
-   )
+   // Spread filter
+   if(UseSpreadFilter)
    {
-      if(!SpreadOK())
-         return;
+      double ask = SymbolInfoDouble(
+         TradeSymbol,
+         SYMBOL_ASK
+      );
 
-      if(!VolumeConfirmed())
-         return;
+      double bid = SymbolInfoDouble(
+         TradeSymbol,
+         SYMBOL_BID
+      );
 
-      if(!BreakoutConfirmed())
-         return;
+      double spreadPoints =
+         (ask - bid) /
+         SymbolInfoDouble(
+            TradeSymbol,
+            SYMBOL_POINT
+         );
 
-      PlaceNewPair();
+      if(spreadPoints > MaxSpreadPoints)
+      {
+         Print("Spread too high: ", spreadPoints);
+         return;
+      }
+   }
+
+   // One position only
+   if(OnePositionOnly)
+   {
+      if(HasOurPosition())
+         return;
+   }
+
+   // Analyze market
+   int signal = GetSignal();
+
+   if(signal == 1 && AllowBuy)
+   {
+      OpenBuy();
+   }
+   else if(signal == -1 && AllowSell)
+   {
+      OpenSell();
    }
 }
 
 //+------------------------------------------------------------------+
-//| DETECT PENDING ACTIVATION                                        |
+//| SIGNAL                                                           |
+//|  1 = BUY                                                         |
+//| -1 = SELL                                                        |
+//|  0 = NONE                                                        |
 //+------------------------------------------------------------------+
-void OnTradeTransaction(
-   const MqlTradeTransaction &trans,
-   const MqlTradeRequest &request,
-   const MqlTradeResult &result
-)
+int GetSignal()
 {
-   if(
-      trans.type !=
-      TRADE_TRANSACTION_DEAL_ADD
-   )
+   double fastEMA[];
+   double slowEMA[];
+   double atr[];
+
+   ArraySetAsSeries(fastEMA, true);
+   ArraySetAsSeries(slowEMA, true);
+   ArraySetAsSeries(atr, true);
+
+   if(CopyBuffer(
+      fastEMAHandle,
+      0,
+      0,
+      5,
+      fastEMA
+   ) < 5)
+      return 0;
+
+   if(CopyBuffer(
+      slowEMAHandle,
+      0,
+      0,
+      5,
+      slowEMA
+   ) < 5)
+      return 0;
+
+   if(CopyBuffer(
+      atrHandle,
+      0,
+      0,
+      5,
+      atr
+   ) < 5)
+      return 0;
+
+   double close1 =
+      iClose(
+         TradeSymbol,
+         EntryTF,
+         1
+      );
+
+   double close2 =
+      iClose(
+         TradeSymbol,
+         EntryTF,
+         2
+      );
+
+   //===============================================================
+   // BULLISH TREND
+   //===============================================================
+
+   bool bullishTrend =
+      fastEMA[1] > slowEMA[1];
+
+   //===============================================================
+   // BEARISH TREND
+   //===============================================================
+
+   bool bearishTrend =
+      fastEMA[1] < slowEMA[1];
+
+   //===============================================================
+   // BUY CONFIRMATION
+   //===============================================================
+
+   bool bullishConfirmation = false;
+
+   if(UseEngulfing)
    {
-      return;
+      if(IsBullishEngulfing())
+         bullishConfirmation = true;
    }
 
-   if(trans.symbol != _Symbol)
-      return;
-
-   ulong deal =
-      trans.deal;
-
-   if(deal == 0)
-      return;
-
-   if(!HistoryDealSelect(deal))
-      return;
-
-   // Check magic
-   ulong magic =
-      (ulong)HistoryDealGetInteger(
-         deal,
-         DEAL_MAGIC
-      );
-
-   if(magic != MagicNumber)
-      return;
-
-   // Only new positions
-   long entry =
-      HistoryDealGetInteger(
-         deal,
-         DEAL_ENTRY
-      );
-
-   if(entry != DEAL_ENTRY_IN)
-      return;
-
-   long type =
-      HistoryDealGetInteger(
-         deal,
-         DEAL_TYPE
-      );
-
-   double price =
-      HistoryDealGetDouble(
-         deal,
-         DEAL_PRICE
-      );
-
-   //===============================================================
-   // BUY STOP ACTIVATED
-   //===============================================================
-
-   if(type == DEAL_TYPE_BUY)
+   if(UseBreakOfStructure)
    {
-      Print(
-         "BUY STOP ACTIVATED @ ",
-         DoubleToString(price, _Digits)
-      );
-
-      // Delete old pending
-      DeletePendingOrders();
-
-      // Immediately create new pair
-      PlaceBuyStop();
-      PlaceSellStop();
-
-      Print(
-         "NEW BUY STOP + SELL STOP CREATED"
-      );
-
-      return;
+      if(BullishBreakOfStructure())
+         bullishConfirmation = true;
    }
 
    //===============================================================
-   // SELL STOP ACTIVATED
+   // SELL CONFIRMATION
    //===============================================================
 
-   if(type == DEAL_TYPE_SELL)
+   bool bearishConfirmation = false;
+
+   if(UseEngulfing)
+   {
+      if(IsBearishEngulfing())
+         bearishConfirmation = true;
+   }
+
+   if(UseBreakOfStructure)
+   {
+      if(BearishBreakOfStructure())
+         bearishConfirmation = true;
+   }
+
+   //===============================================================
+   // BUY
+   //===============================================================
+
+   if(bullishTrend &&
+      close1 > close2 &&
+      bullishConfirmation)
+   {
+      Print("BUY SIGNAL DETECTED");
+      return 1;
+   }
+
+   //===============================================================
+   // SELL
+   //===============================================================
+
+   if(bearishTrend &&
+      close1 < close2 &&
+      bearishConfirmation)
+   {
+      Print("SELL SIGNAL DETECTED");
+      return -1;
+   }
+
+   return 0;
+}
+
+//+------------------------------------------------------------------+
+//| Bullish Engulfing                                                |
+//+------------------------------------------------------------------+
+bool IsBullishEngulfing()
+{
+   double open1 =
+      iOpen(
+         TradeSymbol,
+         EntryTF,
+         1
+      );
+
+   double close1 =
+      iClose(
+         TradeSymbol,
+         EntryTF,
+         1
+      );
+
+   double open2 =
+      iOpen(
+         TradeSymbol,
+         EntryTF,
+         2
+      );
+
+   double close2 =
+      iClose(
+         TradeSymbol,
+         EntryTF,
+         2
+      );
+
+   bool previousBear =
+      close2 < open2;
+
+   bool currentBull =
+      close1 > open1;
+
+   bool engulf =
+      open1 <= close2 &&
+      close1 >= open2;
+
+   return (
+      previousBear &&
+      currentBull &&
+      engulf
+   );
+}
+
+//+------------------------------------------------------------------+
+//| Bearish Engulfing                                                |
+//+------------------------------------------------------------------+
+bool IsBearishEngulfing()
+{
+   double open1 =
+      iOpen(
+         TradeSymbol,
+         EntryTF,
+         1
+      );
+
+   double close1 =
+      iClose(
+         TradeSymbol,
+         EntryTF,
+         1
+      );
+
+   double open2 =
+      iOpen(
+         TradeSymbol,
+         EntryTF,
+         2
+      );
+
+   double close2 =
+      iClose(
+         TradeSymbol,
+         EntryTF,
+         2
+      );
+
+   bool previousBull =
+      close2 > open2;
+
+   bool currentBear =
+      close1 < open1;
+
+   bool engulf =
+      open1 >= close2 &&
+      close1 <= open2;
+
+   return (
+      previousBull &&
+      currentBear &&
+      engulf
+   );
+}
+
+//+------------------------------------------------------------------+
+//| Bullish Break Of Structure                                      |
+//+------------------------------------------------------------------+
+bool BullishBreakOfStructure()
+{
+   double previousHigh = 0;
+
+   for(int i = 3; i < LookbackBars + 3; i++)
+   {
+      double high =
+         iHigh(
+            TradeSymbol,
+            EntryTF,
+            i
+         );
+
+      if(high > previousHigh)
+         previousHigh = high;
+   }
+
+   double close1 =
+      iClose(
+         TradeSymbol,
+         EntryTF,
+         1
+      );
+
+   return close1 > previousHigh;
+}
+
+//+------------------------------------------------------------------+
+//| Bearish Break Of Structure                                      |
+//+------------------------------------------------------------------+
+bool BearishBreakOfStructure()
+{
+   double previousLow = DBL_MAX;
+
+   for(int i = 3; i < LookbackBars + 3; i++)
+   {
+      double low =
+         iLow(
+            TradeSymbol,
+            EntryTF,
+            i
+         );
+
+      if(low < previousLow)
+         previousLow = low;
+   }
+
+   double close1 =
+      iClose(
+         TradeSymbol,
+         EntryTF,
+         1
+      );
+
+   return close1 < previousLow;
+}
+
+//+------------------------------------------------------------------+
+//| OPEN BUY                                                         |
+//+------------------------------------------------------------------+
+void OpenBuy()
+{
+   double ask =
+      SymbolInfoDouble(
+         TradeSymbol,
+         SYMBOL_ASK
+      );
+
+   double atr = GetATR();
+
+   if(atr <= 0)
+      return;
+
+   double slDistance =
+      atr * ATR_SL_Multiplier;
+
+   double sl =
+      ask - slDistance;
+
+   double tp =
+      ask + (
+         slDistance *
+         RiskReward
+      );
+
+   NormalizeStops(
+      ORDER_TYPE_BUY,
+      ask,
+      sl,
+      tp
+   );
+
+   double lot =
+      CalculateLotSize(
+         ask,
+         sl
+      );
+
+   if(lot <= 0)
+      return;
+
+   bool result =
+      trade.Buy(
+         lot,
+         TradeSymbol,
+         ask,
+         sl,
+         tp,
+         "XAUUSD Pullback BUY"
+      );
+
+   if(result)
    {
       Print(
-         "SELL STOP ACTIVATED @ ",
-         DoubleToString(price, _Digits)
+         "BUY OPENED | Lot=",
+         lot,
+         " Entry=",
+         ask,
+         " SL=",
+         sl,
+         " TP=",
+         tp
       );
-
-      // Delete old pending
-      DeletePendingOrders();
-
-      // Immediately create new pair
-      PlaceBuyStop();
-      PlaceSellStop();
-
+   }
+   else
+   {
       Print(
-         "NEW BUY STOP + SELL STOP CREATED"
+         "BUY FAILED: ",
+         trade.ResultRetcodeDescription()
       );
-
-      return;
    }
 }
 
 //+------------------------------------------------------------------+
-//| END                                                              |
+//| OPEN SELL                                                        |
 //+------------------------------------------------------------------+
+void OpenSell()
+{
+   double bid =
+      SymbolInfoDouble(
+         TradeSymbol,
+         SYMBOL_BID
+      );
+
+   double atr = GetATR();
+
+   if(atr <= 0)
+      return;
+
+   double slDistance =
+      atr * ATR_SL_Multiplier;
+
+   double sl =
+      bid + slDistance;
