@@ -6,30 +6,41 @@ CTrade trade;
 
 input double LotSize = 0.01;
 input double RiskReward = 2.0;
+
 input int StopLossPoints = 300;
+
+input bool UseBreakEven = true;
+input double BreakEvenAtR = 1.0;
+
 input int MagicNumber = 20260825;
 
 datetime LastBar = 0;
 
 //+------------------------------------------------------------------+
-//| Expert initialization                                            |
+//| INIT                                                             |
 //+------------------------------------------------------------------+
 int OnInit()
 {
    trade.SetExpertMagicNumber(MagicNumber);
    trade.SetDeviationInPoints(20);
 
-   Print("XAUUSD.m CLEAN EA STARTED");
+   Print("XAUUSD.m EA + BREAK EVEN STARTED");
 
    return(INIT_SUCCEEDED);
 }
 
 //+------------------------------------------------------------------+
-//| Expert tick                                                      |
+//| TICK                                                             |
 //+------------------------------------------------------------------+
 void OnTick()
 {
-   datetime CurrentBar = iTime(_Symbol, PERIOD_M1, 0);
+   // Manage existing trade every tick
+   if(UseBreakEven)
+      ManageBreakEven();
+
+   // New candle check
+   datetime CurrentBar =
+      iTime(_Symbol, PERIOD_M1, 0);
 
    if(CurrentBar == LastBar)
       return;
@@ -43,17 +54,23 @@ void OnTick()
 }
 
 //+------------------------------------------------------------------+
-//| Signal                                                           |
+//| SIGNAL                                                           |
 //+------------------------------------------------------------------+
 void CheckSignal()
 {
-   double Open1  = iOpen(_Symbol, PERIOD_M1, 1);
-   double Close1 = iClose(_Symbol, PERIOD_M1, 1);
+   double Open1 =
+      iOpen(_Symbol, PERIOD_M1, 1);
 
-   double Open2  = iOpen(_Symbol, PERIOD_M1, 2);
-   double Close2 = iClose(_Symbol, PERIOD_M1, 2);
+   double Close1 =
+      iClose(_Symbol, PERIOD_M1, 1);
 
-   // Bullish engulfing
+   double Open2 =
+      iOpen(_Symbol, PERIOD_M1, 2);
+
+   double Close2 =
+      iClose(_Symbol, PERIOD_M1, 2);
+
+   // BUY
    if(Close2 < Open2 &&
       Close1 > Open1 &&
       Open1 <= Close2 &&
@@ -63,7 +80,7 @@ void CheckSignal()
       return;
    }
 
-   // Bearish engulfing
+   // SELL
    if(Close2 > Open2 &&
       Close1 < Open1 &&
       Open1 >= Close2 &&
@@ -79,38 +96,45 @@ void CheckSignal()
 //+------------------------------------------------------------------+
 void BuyTrade()
 {
-   double Ask = SymbolInfoDouble(
-      _Symbol,
-      SYMBOL_ASK
-   );
+   double Ask =
+      SymbolInfoDouble(
+         _Symbol,
+         SYMBOL_ASK
+      );
 
-   double PointValue = SymbolInfoDouble(
-      _Symbol,
-      SYMBOL_POINT
-   );
+   double PointValue =
+      SymbolInfoDouble(
+         _Symbol,
+         SYMBOL_POINT
+      );
 
-   int DigitsValue = (int)SymbolInfoInteger(
-      _Symbol,
-      SYMBOL_DIGITS
-   );
+   int DigitsValue =
+      (int)SymbolInfoInteger(
+         _Symbol,
+         SYMBOL_DIGITS
+      );
 
-   double SL = Ask -
-               StopLossPoints * PointValue;
+   double SL =
+      Ask -
+      StopLossPoints * PointValue;
 
-   double TP = Ask +
-               StopLossPoints *
-               RiskReward *
-               PointValue;
+   double TP =
+      Ask +
+      StopLossPoints *
+      RiskReward *
+      PointValue;
 
-   SL = NormalizeDouble(
-      SL,
-      DigitsValue
-   );
+   SL =
+      NormalizeDouble(
+         SL,
+         DigitsValue
+      );
 
-   TP = NormalizeDouble(
-      TP,
-      DigitsValue
-   );
+   TP =
+      NormalizeDouble(
+         TP,
+         DigitsValue
+      );
 
    if(trade.Buy(
       LotSize,
@@ -118,9 +142,16 @@ void BuyTrade()
       0.0,
       SL,
       TP,
-      "Clean BUY"))
+      "BE BUY"))
    {
-      Print("BUY OPENED");
+      Print(
+         "BUY OPENED | Entry=",
+         Ask,
+         " SL=",
+         SL,
+         " TP=",
+         TP
+      );
    }
    else
    {
@@ -136,38 +167,45 @@ void BuyTrade()
 //+------------------------------------------------------------------+
 void SellTrade()
 {
-   double Bid = SymbolInfoDouble(
-      _Symbol,
-      SYMBOL_BID
-   );
+   double Bid =
+      SymbolInfoDouble(
+         _Symbol,
+         SYMBOL_BID
+      );
 
-   double PointValue = SymbolInfoDouble(
-      _Symbol,
-      SYMBOL_POINT
-   );
+   double PointValue =
+      SymbolInfoDouble(
+         _Symbol,
+         SYMBOL_POINT
+      );
 
-   int DigitsValue = (int)SymbolInfoInteger(
-      _Symbol,
-      SYMBOL_DIGITS
-   );
+   int DigitsValue =
+      (int)SymbolInfoInteger(
+         _Symbol,
+         SYMBOL_DIGITS
+      );
 
-   double SL = Bid +
-               StopLossPoints * PointValue;
+   double SL =
+      Bid +
+      StopLossPoints * PointValue;
 
-   double TP = Bid -
-               StopLossPoints *
-               RiskReward *
-               PointValue;
+   double TP =
+      Bid -
+      StopLossPoints *
+      RiskReward *
+      PointValue;
 
-   SL = NormalizeDouble(
-      SL,
-      DigitsValue
-   );
+   SL =
+      NormalizeDouble(
+         SL,
+         DigitsValue
+      );
 
-   TP = NormalizeDouble(
-      TP,
-      DigitsValue
-   );
+   TP =
+      NormalizeDouble(
+         TP,
+         DigitsValue
+      );
 
    if(trade.Sell(
       LotSize,
@@ -175,9 +213,16 @@ void SellTrade()
       0.0,
       SL,
       TP,
-      "Clean SELL"))
+      "BE SELL"))
    {
-      Print("SELL OPENED");
+      Print(
+         "SELL OPENED | Entry=",
+         Bid,
+         " SL=",
+         SL,
+         " TP=",
+         TP
+      );
    }
    else
    {
@@ -189,7 +234,154 @@ void SellTrade()
 }
 
 //+------------------------------------------------------------------+
-//| Check existing position                                          |
+//| BREAK EVEN                                                       |
+//+------------------------------------------------------------------+
+void ManageBreakEven()
+{
+   for(int i = PositionsTotal() - 1;
+       i >= 0;
+       i--)
+   {
+      ulong Ticket =
+         PositionGetTicket(i);
+
+      if(Ticket == 0)
+         continue;
+
+      string SymbolName =
+         PositionGetString(
+            POSITION_SYMBOL
+         );
+
+      long Magic =
+         PositionGetInteger(
+            POSITION_MAGIC
+         );
+
+      if(SymbolName != _Symbol ||
+         Magic != MagicNumber)
+         continue;
+
+      double Entry =
+         PositionGetDouble(
+            POSITION_PRICE_OPEN
+         );
+
+      double SL =
+         PositionGetDouble(
+            POSITION_SL
+         );
+
+      double TP =
+         PositionGetDouble(
+            POSITION_TP
+         );
+
+      long Type =
+         PositionGetInteger(
+            POSITION_TYPE
+         );
+
+      double CurrentPrice;
+
+      // BUY
+      if(Type == POSITION_TYPE_BUY)
+      {
+         CurrentPrice =
+            SymbolInfoDouble(
+               _Symbol,
+               SYMBOL_BID
+            );
+
+         double Risk =
+            Entry - SL;
+
+         if(Risk <= 0)
+            continue;
+
+         double Trigger =
+            Entry +
+            Risk * BreakEvenAtR;
+
+         // Move SL to Entry
+         if(CurrentPrice >= Trigger &&
+            SL < Entry)
+         {
+            int DigitsValue =
+               (int)SymbolInfoInteger(
+                  _Symbol,
+                  SYMBOL_DIGITS
+               );
+
+            double NewSL =
+               NormalizeDouble(
+                  Entry,
+                  DigitsValue
+               );
+
+            if(trade.PositionModify(
+               Ticket,
+               NewSL,
+               TP))
+            {
+               Print(
+                  "BUY BREAK-EVEN activated | SL -> Entry"
+               );
+            }
+         }
+      }
+
+      // SELL
+      if(Type == POSITION_TYPE_SELL)
+      {
+         CurrentPrice =
+            SymbolInfoDouble(
+               _Symbol,
+               SYMBOL_ASK
+            );
+
+         double Risk =
+            SL - Entry;
+
+         if(Risk <= 0)
+            continue;
+
+         double Trigger =
+            Entry -
+            Risk * BreakEvenAtR;
+
+         // Move SL to Entry
+         if(CurrentPrice <= Trigger &&
+            SL > Entry)
+         {
+            int DigitsValue =
+               (int)SymbolInfoInteger(
+                  _Symbol,
+                  SYMBOL_DIGITS
+               );
+
+            double NewSL =
+               NormalizeDouble(
+                  Entry,
+                  DigitsValue
+               );
+
+            if(trade.PositionModify(
+               Ticket,
+               NewSL,
+               TP))
+            {
+               Print(
+                  "SELL BREAK-EVEN activated | SL -> Entry"
+               );
+            }
+         }
+      }
+   }
+}
+
+//+------------------------------------------------------------------+
+//| CHECK POSITION                                                   |
 //+------------------------------------------------------------------+
 bool HasPosition()
 {
@@ -197,18 +389,21 @@ bool HasPosition()
        i >= 0;
        i--)
    {
-      ulong Ticket = PositionGetTicket(i);
+      ulong Ticket =
+         PositionGetTicket(i);
 
       if(Ticket == 0)
          continue;
 
-      string SymbolName = PositionGetString(
-         POSITION_SYMBOL
-      );
+      string SymbolName =
+         PositionGetString(
+            POSITION_SYMBOL
+         );
 
-      long Magic = PositionGetInteger(
-         POSITION_MAGIC
-      );
+      long Magic =
+         PositionGetInteger(
+            POSITION_MAGIC
+         );
 
       if(SymbolName == _Symbol &&
          Magic == MagicNumber)
